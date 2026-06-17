@@ -1,0 +1,29 @@
+# --- Agent / local working files (not tracked) ---
+CLAUDE.md
+agent_docs/
+references/
+data/
+
+# --- Secrets & credentials ---
+.env
+.env.*
+*.key
+*-key.json
+service-account*.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/

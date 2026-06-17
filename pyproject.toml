@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chatty-data-generation"
+version = "0.1.0"
+description = "Conversational AI app: synthetic data generation from a SQL schema, and natural-language querying of that data."
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    "google-genai",       # Gemini via Google GenAI SDK (Vertex AI auth)
+    "streamlit",          # UI (swap for `gradio` if preferred)
+    "psycopg[binary]",    # PostgreSQL driver
+    "sqlparse",           # parse SQL DDL schemas
+    "pandas",             # tabular data handling
+    "plotly",             # result plots
+    "langfuse",           # observability
+    "python-dotenv",      # load .env config
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pytest",
+    "mypy",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
