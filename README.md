@@ -25,12 +25,22 @@ reports/figures/  generated plots & figures
 
 ## Getting started
 
-> Setup is a work in progress — steps will be filled in as `src/` takes shape.
+```bash
+uv sync --extra dev          # create .venv and install dependencies
+cp .env.example .env         # then fill in your credentials
+uv run streamlit run src/app.py
+```
 
-1. Copy `.env` and fill in your GCP project and credentials.
-2. Install dependencies (a `requirements.txt` / `pyproject.toml` will be added).
-3. Run the UI.
+Run tests with `uv run pytest`.
 
 ## Configuration
 
-Environment variables live in `.env` (not tracked). Expected keys will be documented here as they are introduced.
+Copy `.env.example` to `.env` (not tracked) and fill in:
+
+| Key | Purpose |
+|---|---|
+| `GOOGLE_GENAI_USE_VERTEXAI` | `true` for Vertex AI auth, `false` to use an API key |
+| `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` | GCP project + region (Vertex auth) |
+| `GEMINI_API_KEY` | API key (when not using Vertex) |
+| `GEMINI_MODEL` | Model id (default `gemini-2.0-flash`) |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | Optional observability |
