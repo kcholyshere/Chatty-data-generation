@@ -1,0 +1,273 @@
+"""The generation engine.
+
+Design principle: the **LLM produces content only**. Primary keys are sequential integers, foreign-key
+values are sampled from the parent table's already-generated keys, and a deterministic validation pass
+enforces ENUM/CHECK/length/NOT NULL/UNIQUE. This guarantees referential integrity rather than trusting
+the model to get keys right.
+"""
+
+from __future__ import annotations
+
+import datetime
+import random
+from dataclasses import dataclass
+from typing import Protocol
+
+import pandas as pd
+from pydantic import BaseModel
+
+from generation.row_models import build_row_model, coerce_value, python_type
+from schema.models import Column, Schema, Table
+
+_INT_TYPES = {"INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "MEDIUMINT"}
+
+
+class ContentClient(Protocol):
+    """Anything that can return a list of rows matching a Pydantic schema (the real LLM client or a stub)."""
+
+    def generate_structured(self, prompt: str, schema: object, *, temperature: float, max_tokens: int | None) -> object: ...
+
+
+@dataclass
+class GenerationConfig:
+    rows_per_table: int = 1000
+    temperature: float = 1.0
+    max_tokens: int | None = None
+    batch_size: int = 40
+    user_prompt: str = ""
+    seed: int | None = None
+
+
+def generate(schema: Schema, config: GenerationConfig, client: ContentClient) -> dict[str, pd.DataFrame]:
+    """Generate one DataFrame per table, in dependency order, with integrity guaranteed."""
+    if config.seed is not None:
+        random.seed(config.seed)
+
+    order, deferred = schema.topo_order()
+    generated: dict[str, dict[str, list]] = {}
+    for name in order:
+        generated[name] = _generate_table(schema.table(name), config, deferred, generated, client)
+
+    _backfill_deferred(schema, deferred, generated)
+
+    return {
+        name: pd.DataFrame({col.name: generated[name][col.name] for col in schema.table(name).columns})
+        for name in order
+    }
+
+
+def _generate_table(
+    table: Table,
+    config: GenerationConfig,
+    deferred: set[tuple[str, str]],
+    generated: dict[str, dict[str, list]],
+    client: ContentClient,
+) -> dict[str, list]:
+    n = config.rows_per_table
+    pk_cols, active_fks, deferred_cols, content_cols = _column_roles(table, deferred)
+
+    data: dict[str, list] = {}
+    for col in pk_cols:
+        data[col] = list(range(1, n + 1))
+    for col, (ref_table, ref_col) in active_fks.items():
+        pool = list(range(1, n + 1)) if ref_table == table.name else generated[ref_table][ref_col]
+        data[col] = [random.choice(pool) for _ in range(n)] if pool else [None] * n
+    for col in deferred_cols:
+        data[col] = [None] * n
+
+    if content_cols:
+        rows = _generate_content(client, table, content_cols, n, config)
+        for col in content_cols:
+            data[col.name] = _validate_column(col, [row.get(col.name) for row in rows])
+
+    return data
+
+
+def _column_roles(
+    table: Table, deferred: set[tuple[str, str]]
+) -> tuple[set[str], dict[str, tuple[str, str]], set[str], list[Column]]:
+    """Classify each column: sequential PK, active FK, deferred (NULL), or LLM-generated content."""
+    pk_cols = _sequential_pk_columns(table)
+    active_fks: dict[str, tuple[str, str]] = {}
+    deferred_cols: set[str] = set()
+    for fk in table.foreign_keys:
+        for col, ref_col in zip(fk.columns, fk.ref_columns):
+            if (table.name, col) in deferred:
+                deferred_cols.add(col)
+            else:
+                active_fks[col] = (fk.ref_table, ref_col)
+    handled = pk_cols | set(active_fks) | deferred_cols
+    content_cols = [c for c in table.columns if c.name not in handled]
+    return pk_cols, active_fks, deferred_cols, content_cols
+
+
+def regenerate_table(
+    schema: Schema,
+    table_name: str,
+    frames: dict[str, pd.DataFrame],
+    config: GenerationConfig,
+    client: ContentClient,
+) -> pd.DataFrame:
+    """Re-generate only the *content* columns of one table, preserving its existing keys and FK values.
+
+    Used by the UI's per-table "refine via feedback" action; ``config.user_prompt`` carries the feedback.
+    """
+    if config.seed is not None:
+        random.seed(config.seed)
+    table = schema.table(table_name)
+    _, deferred = schema.topo_order()
+    _, _, _, content_cols = _column_roles(table, deferred)
+
+    df = frames[table_name].copy()
+    if content_cols:
+        rows = _generate_content(client, table, content_cols, len(df), config)
+        for col in content_cols:
+            df[col.name] = _validate_column(col, [row.get(col.name) for row in rows])
+    return df
+
+
+def _sequential_pk_columns(table: Table) -> set[str]:
+    """A single integer primary key gets sequential ids; composite/non-integer PKs are left to FK/content."""
+    if len(table.primary_key) != 1:
+        return set()
+    col = table.column(table.primary_key[0])
+    if col is not None and col.base_type in _INT_TYPES:
+        return {col.name}
+    return set()
+
+
+def _generate_content(
+    client: ContentClient,
+    table: Table,
+    content_cols: list[Column],
+    n: int,
+    config: GenerationConfig,
+) -> list[dict]:
+    row_model = build_row_model(table, content_cols)
+    rows: list[dict] = []
+    while len(rows) < n:
+        k = min(config.batch_size, n - len(rows))
+        prompt = _build_prompt(table, content_cols, k, config.user_prompt)
+        items = client.generate_structured(
+            prompt, list[row_model], temperature=config.temperature, max_tokens=config.max_tokens
+        )
+        batch = [_to_dict(item) for item in (items or [])][:k]
+        if not batch:
+            batch = [{} for _ in range(k)]  # guard against an empty response (avoid an infinite loop)
+        rows.extend(batch)
+    return rows[:n]
+
+
+def _to_dict(item: object) -> dict:
+    if isinstance(item, BaseModel):
+        return item.model_dump()
+    if isinstance(item, dict):
+        return item
+    return dict(item)  # type: ignore[arg-type]
+
+
+def _build_prompt(table: Table, content_cols: list[Column], k: int, user_prompt: str) -> str:
+    lines = [
+        f"Generate {k} realistic, varied rows for the SQL table '{table.name}'.",
+        "Each row is a JSON object with exactly these fields:",
+    ]
+    for col in content_cols:
+        notes: list[str] = []
+        if col.enum_values:
+            notes.append("one of: " + ", ".join(col.enum_values))
+        if col.length:
+            notes.append(f"<= {col.length} chars")
+        if col.check_min is not None or col.check_max is not None:
+            notes.append(f"between {col.check_min} and {col.check_max}")
+        if col.unique:
+            notes.append("unique")
+        if not col.nullable:
+            notes.append("required")
+        suffix = f" — {'; '.join(notes)}" if notes else ""
+        lines.append(f"- {col.name} ({col.raw_type}){suffix}")
+    if user_prompt.strip():
+        lines.append("\nAdditional instructions: " + user_prompt.strip())
+    lines.append("\nReturn a JSON array of row objects.")
+    return "\n".join(lines)
+
+
+def _validate_column(col: Column, values: list) -> list:
+    """Deterministic integrity backstop: coerce types, enforce ENUM/CHECK/length/NOT NULL, then UNIQUE."""
+    out: list = []
+    for value in values:
+        value = coerce_value(col, value)
+        if col.enum_values and value is not None and value not in col.enum_values:
+            value = random.choice(col.enum_values)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if col.check_min is not None and value < col.check_min:
+                value = type(value)(col.check_min)
+            if col.check_max is not None and value > col.check_max:
+                value = type(value)(col.check_max)
+        if isinstance(value, str) and col.length and len(value) > col.length:
+            value = value[: col.length]
+        if value is None and not col.nullable:
+            value = _placeholder(col)
+        out.append(value)
+
+    if col.unique or col.is_primary_key:
+        out = _dedupe(out)
+    return out
+
+
+def _placeholder(col: Column):
+    py_type = python_type(col)
+    if col.enum_values:
+        return col.enum_values[0]
+    if py_type is int:
+        return 0
+    if py_type is float:
+        return 0.0
+    if py_type is bool:
+        return False
+    if py_type is datetime.date:
+        return datetime.date.today()
+    if py_type is datetime.datetime:
+        return datetime.datetime.now()
+    return col.name
+
+
+def _dedupe(values: list) -> list:
+    seen: set = set()
+    out: list = []
+    for i, value in enumerate(values):
+        if value is None:  # SQL allows multiple NULLs in a UNIQUE column; leave them be
+            out.append(None)
+            continue
+        candidate = value
+        bump = 0
+        while candidate in seen:
+            bump += 1
+            candidate = _bump(value, bump, i)
+        seen.add(candidate)
+        out.append(candidate)
+    return out
+
+
+def _bump(value, bump: int, index: int):
+    if isinstance(value, str):
+        if "@" in value:
+            local, _, domain = value.partition("@")
+            return f"{local}+{index}@{domain}"
+        return f"{value}-{index}"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value + bump * 1_000_003
+    if isinstance(value, float):
+        return value + bump * 1e-6
+    return value
+
+
+def _backfill_deferred(schema: Schema, deferred: set[tuple[str, str]], generated: dict[str, dict[str, list]]) -> None:
+    """Fill deferred (cycle-broken) FK columns now that every table has been generated."""
+    for table_name, col in deferred:
+        table = schema.table(table_name)
+        fk = next(fk for fk in table.foreign_keys if col in fk.columns)
+        ref_col = fk.ref_columns[fk.columns.index(col)]
+        pool = generated[fk.ref_table][ref_col]
+        n = len(generated[table_name][col])
+        if pool:
+            generated[table_name][col] = [random.choice(pool) for _ in range(n)]
