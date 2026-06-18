@@ -14,7 +14,9 @@ dependencies = [
     "streamlit",          # UI (swap for `gradio` if preferred)
     "psycopg[binary]",    # PostgreSQL driver
     "sqlparse",           # parse SQL DDL schemas
+    "pydantic",           # schema models + structured-output schemas
     "pandas",             # tabular data handling
+    "pyarrow",            # Parquet writing
     "plotly",             # result plots
     "langfuse",           # observability
     "python-dotenv",      # load .env config
@@ -36,3 +38,4 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
