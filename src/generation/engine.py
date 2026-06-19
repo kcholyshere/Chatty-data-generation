@@ -33,7 +33,7 @@ class GenerationConfig:
     rows_per_table: int = 1000
     temperature: float = 1.0
     max_tokens: int | None = None
-    batch_size: int = 40
+    batch_size: int = 20
     user_prompt: str = ""
     seed: int | None = None
 

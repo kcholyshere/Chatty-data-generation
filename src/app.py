@@ -31,7 +31,7 @@ def data_generation_tab() -> None:
     col_a, col_b, col_c = st.columns(3)
     rows = col_a.number_input("Rows per table", min_value=1, max_value=5000, value=50, step=10)
     temperature = col_b.slider("Temperature", 0.0, 2.0, 1.0, 0.1)
-    max_tokens = col_c.number_input("Max output tokens", min_value=256, max_value=32000, value=4096, step=256)
+    max_tokens = col_c.number_input("Max output tokens", min_value=256, max_value=32000, value=8192, step=256)
 
     if uploaded is not None and st.button("Generate", type="primary"):
         ddl = uploaded.getvalue().decode("utf-8", errors="replace")

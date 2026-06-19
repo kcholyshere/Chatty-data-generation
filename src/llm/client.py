@@ -8,16 +8,57 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
-from typing import Any, TypeVar
+from typing import Any, TypeVar, get_args, get_origin
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from config import Settings, get_settings
 from schema.models import Table
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _parse_response_text(text: str, schema: object) -> Any:
+    """Parse JSON text into ``schema``, salvaging complete objects if the array was truncated."""
+    try:
+        return TypeAdapter(schema).validate_json(text)
+    except Exception:
+        if get_origin(schema) is list:
+            return _salvage_objects(text, get_args(schema)[0])
+        raise
+
+
+def _salvage_objects(text: str, model: type[BaseModel]) -> list:
+    """Extract and validate every *complete* top-level JSON object from a (possibly truncated) array."""
+    objects: list = []
+    depth = 0
+    start: int | None = None
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                with contextlib.suppress(Exception):
+                    objects.append(model.model_validate_json(text[start : i + 1]))
+                start = None
+    return objects
 
 
 class LLMClient:
@@ -74,9 +115,8 @@ class LLMClient:
             )
         if response.parsed is not None:
             return response.parsed
-        # Fall back to manual validation if the SDK did not populate ``parsed``.
-        target = schema[0] if isinstance(schema, list) else schema
-        return target.model_validate_json(response.text)
+        # The SDK did not populate ``parsed`` (e.g. the JSON was truncated at ``max_tokens``).
+        return _parse_response_text(response.text or "", schema)
 
     @contextlib.contextmanager
     def _trace(self, prompt: str, temperature: float) -> Iterator[None]:
