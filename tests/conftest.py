@@ -20,7 +20,7 @@ class ScriptedClient:
     def __init__(self, value_fn):
         self.value_fn = value_fn
 
-    def generate_structured(self, prompt, schema, *, temperature, max_tokens):
+    def generate_structured(self, prompt, schema, **kwargs):
         row_model = get_args(schema)[0]
         k = int(re.search(r"Generate (\d+)", prompt).group(1))
         return [

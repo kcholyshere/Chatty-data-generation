@@ -33,6 +33,11 @@ def data_generation_tab() -> None:
     temperature = col_b.slider("Temperature", 0.0, 2.0, 1.0, 0.1)
     max_tokens = col_c.number_input("Max output tokens", min_value=256, max_value=32000, value=8192, step=256)
 
+    with st.expander("Speed settings"):
+        s1, s2 = st.columns(2)
+        concurrency = s1.slider("Parallel requests", 1, 24, 8, help="How many LLM batches run at once.")
+        disable_thinking = s2.checkbox("Disable model 'thinking' (faster)", value=True)
+
     if uploaded is not None and st.button("Generate", type="primary"):
         ddl = uploaded.getvalue().decode("utf-8", errors="replace")
         schema = parse_ddl(ddl)
@@ -46,7 +51,10 @@ def data_generation_tab() -> None:
             temperature=float(temperature),
             max_tokens=int(max_tokens),
             user_prompt=prompt,
+            concurrency=int(concurrency),
+            disable_thinking=bool(disable_thinking),
         )
+        st.session_state["gen_config"] = config
         try:
             with st.spinner("Generating synthetic data…"):
                 frames = generate(schema, config, _get_client())
@@ -75,11 +83,14 @@ def _render_results(temperature: float, max_tokens: int) -> None:
 
     feedback = st.text_area("Refine this table via feedback", key=f"fb_{table_name}")
     if st.button("Submit refinement") and feedback.strip():
+        base = st.session_state.get("gen_config", GenerationConfig())
         config = GenerationConfig(
             rows_per_table=len(frames[table_name]),
             temperature=float(temperature),
             max_tokens=int(max_tokens),
             user_prompt=feedback,
+            concurrency=base.concurrency,
+            disable_thinking=base.disable_thinking,
         )
         try:
             with st.spinner(f"Refining {table_name}…"):

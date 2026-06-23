@@ -7,11 +7,13 @@ return data matching a Pydantic schema, and wraps each call in best-effort Langf
 from __future__ import annotations
 
 import contextlib
+import random
+import time
 from collections.abc import Iterator
 from typing import Any, TypeVar, get_args, get_origin
 
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel, TypeAdapter
 
 from config import Settings, get_settings
@@ -98,25 +100,40 @@ class LLMClient:
         temperature: float = 1.0,
         max_tokens: int | None = None,
         system_instruction: str | None = None,
+        disable_thinking: bool = False,
     ) -> Any:
-        """Generate a response constrained to ``schema`` and return the parsed Pydantic object(s)."""
+        """Generate a response constrained to ``schema`` and return the parsed Pydantic object(s).
+
+        Thread-safe: the underlying client may be shared across worker threads. Set
+        ``disable_thinking`` to skip the model's reasoning step (much faster on flash thinking models).
+        """
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=schema,
             temperature=temperature,
             max_output_tokens=max_tokens,
             system_instruction=system_instruction,
+            thinking_config=types.ThinkingConfig(thinking_budget=0) if disable_thinking else None,
         )
         with self._trace(prompt, temperature):
-            response = self._client.models.generate_content(
-                model=self.settings.gemini_model,
-                contents=prompt,
-                config=config,
-            )
+            response = self._call_with_retry(prompt, config)
         if response.parsed is not None:
             return response.parsed
         # The SDK did not populate ``parsed`` (e.g. the JSON was truncated at ``max_tokens``).
         return _parse_response_text(response.text or "", schema)
+
+    def _call_with_retry(self, prompt: str, config: types.GenerateContentConfig, attempts: int = 4):
+        """Call the model, retrying transient rate-limit (429) and server (5xx) errors with backoff."""
+        for attempt in range(attempts):
+            try:
+                return self._client.models.generate_content(
+                    model=self.settings.gemini_model, contents=prompt, config=config
+                )
+            except (errors.ClientError, errors.ServerError) as exc:
+                transient = isinstance(exc, errors.ServerError) or getattr(exc, "code", None) == 429
+                if not transient or attempt == attempts - 1:
+                    raise
+                time.sleep(min(2**attempt + random.uniform(0, 1), 30))
 
     @contextlib.contextmanager
     def _trace(self, prompt: str, temperature: float) -> Iterator[None]:
