@@ -15,6 +15,7 @@ column names/types from ``PRAGMA``.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,16 @@ class AnswerResult:
     table: pd.DataFrame | None = None
     chart: ChartSpec | None = None
     sql: list[str] = field(default_factory=list)
+
+
+def _json_safe_records(df: pd.DataFrame) -> list[dict]:
+    """Records with missing/non-finite values coerced to null so the tool result is valid JSON.
+
+    Pandas NULLs surface as ``float('nan')``, which ``json`` emits as the literal ``NaN`` — invalid
+    JSON that the Gemini API rejects (``Invalid JSON payload … Unexpected token``) when it serialises
+    the tool's return value. Round-tripping through ``to_json`` maps NaN/NaT/inf to null.
+    """
+    return json.loads(df.to_json(orient="records", date_format="iso"))
 
 
 def _is_read_only(sql: str) -> bool:
@@ -138,7 +149,7 @@ class QueryService:
             result.sql.append(query)
             return {
                 "columns": list(df.columns),
-                "rows": df.head(_MAX_ROWS_TO_MODEL).to_dict(orient="records"),
+                "rows": _json_safe_records(df.head(_MAX_ROWS_TO_MODEL)),
                 "row_count": int(len(df)),
             }
 

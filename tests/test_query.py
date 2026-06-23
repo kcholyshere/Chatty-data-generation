@@ -5,12 +5,14 @@ These cover everything that doesn't need the LLM (the tool closures call ``_run_
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from query.service import QueryService, _is_read_only
+from query.service import QueryService, _is_read_only, _json_safe_records
 from schema.models import Column, ForeignKey, Schema, Table
 from storage.writer import schema_sidecar_path
 
@@ -62,6 +64,23 @@ def test_connection_is_read_only(db_path):
     service = QueryService(db_path, client=None)
     with pytest.raises(sqlite3.OperationalError), service._connect() as conn:
         conn.execute("INSERT INTO customers VALUES (3, 'C')")
+
+
+def test_json_safe_records_coerce_missing_to_null():
+    """NULL/NaN must become null, not the literal ``NaN`` the Gemini API rejects."""
+    df = pd.DataFrame({"manager_id": [1.0, np.nan], "count": [2, 3]})
+    records = _json_safe_records(df)
+    assert records[1]["manager_id"] is None
+    # ``allow_nan=False`` mirrors strict JSON: this would raise on a stray NaN.
+    json.dumps(records, allow_nan=False)
+
+
+def test_run_sql_result_is_strict_json_with_nulls(db_path):
+    """A query that yields a NULL (e.g. via aggregation) must serialise as strict JSON."""
+    service = QueryService(db_path, client=None)
+    df = service._run_select("SELECT NULL AS manager_id, COUNT(*) AS count FROM customers")
+    payload = {"rows": _json_safe_records(df)}
+    json.dumps(payload, allow_nan=False)
 
 
 def test_schema_summary_uses_sidecar_foreign_keys(db_path):
