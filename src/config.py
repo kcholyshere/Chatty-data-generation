@@ -19,7 +19,7 @@ class Settings(BaseModel):
     google_cloud_location: str = "us-central1"
     use_vertexai: bool = True
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-3.5-flash"
 
     # --- Langfuse (optional observability) ---
     langfuse_public_key: str | None = None
@@ -46,7 +46,7 @@ def get_settings() -> Settings:
         google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
         use_vertexai=_bool(os.getenv("GOOGLE_GENAI_USE_VERTEXAI"), default=True),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash"),
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
         langfuse_host=os.getenv("LANGFUSE_HOST"),

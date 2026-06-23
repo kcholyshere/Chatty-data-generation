@@ -7,7 +7,7 @@ A conversational AI app with two functions:
 
 ## Tech stack
 
-- **LLM:** Gemini 2.0 Flash (or newer) — streaming, function calling, structured/JSON output.
+- **LLM:** Gemini 3.5 Flash (2.0+ supported) — function calling, structured/JSON output.
 - **SDK:** Google GenAI SDK (Vertex AI auth via a GCP project).
 - **UI:** Streamlit or Gradio.
 - **DB:** PostgreSQL.
@@ -42,5 +42,5 @@ Copy `.env.example` to `.env` (not tracked) and fill in:
 | `GOOGLE_GENAI_USE_VERTEXAI` | `true` for Vertex AI auth, `false` to use an API key |
 | `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` | GCP project + region (Vertex auth) |
 | `GEMINI_API_KEY` | API key (when not using Vertex) |
-| `GEMINI_MODEL` | Model id (default `gemini-2.0-flash`) |
+| `GEMINI_MODEL` | Model id (default `gemini-3.5-flash`) |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | Optional observability |

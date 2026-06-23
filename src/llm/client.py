@@ -122,12 +122,37 @@ class LLMClient:
         # The SDK did not populate ``parsed`` (e.g. the JSON was truncated at ``max_tokens``).
         return _parse_response_text(response.text or "", schema)
 
-    def _call_with_retry(self, prompt: str, config: types.GenerateContentConfig, attempts: int = 4):
+    def chat_with_tools(
+        self,
+        contents: Any,
+        tools: list[Any],
+        *,
+        system_instruction: str | None = None,
+        temperature: float = 0.0,
+        disable_thinking: bool = True,
+    ) -> Any:
+        """Run a tool-using turn and return the raw SDK response (final text after any tool calls).
+
+        ``tools`` are plain Python callables; the SDK's automatic function calling converts them to
+        declarations, executes the calls the model requests, feeds results back, and loops until the
+        model returns text. Used by the Phase 2 "Talk to your data" query service. Low temperature by
+        default for reliable, deterministic tool selection (see ``function_calling.md`` best practices).
+        """
+        config = types.GenerateContentConfig(
+            tools=tools,
+            system_instruction=system_instruction,
+            temperature=temperature,
+            thinking_config=types.ThinkingConfig(thinking_budget=0) if disable_thinking else None,
+        )
+        with self._trace(str(contents), temperature):
+            return self._call_with_retry(contents, config)
+
+    def _call_with_retry(self, contents: Any, config: types.GenerateContentConfig, attempts: int = 4):
         """Call the model, retrying transient rate-limit (429) and server (5xx) errors with backoff."""
         for attempt in range(attempts):
             try:
                 return self._client.models.generate_content(
-                    model=self.settings.gemini_model, contents=prompt, config=config
+                    model=self.settings.gemini_model, contents=contents, config=config
                 )
             except (errors.ClientError, errors.ServerError) as exc:
                 transient = isinstance(exc, errors.ServerError) or getattr(exc, "code", None) == 429

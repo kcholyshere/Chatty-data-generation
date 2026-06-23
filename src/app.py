@@ -6,11 +6,15 @@ Run with: ``uv run streamlit run src/app.py``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pandas as pd
 import streamlit as st
 
 from generation.engine import GenerationConfig, generate, regenerate_table
+from query.service import ChartSpec, QueryService
 from schema.parser import parse_ddl
-from storage.writer import build_csv_zip, write_dataset
+from storage.writer import DEFAULT_ROOT, build_csv_zip, write_dataset
 
 st.set_page_config(page_title="Chatty Data Generation", layout="wide")
 
@@ -65,7 +69,7 @@ def data_generation_tab() -> None:
         st.session_state["schema"] = schema
         st.session_state["frames"] = frames
         st.session_state["schema_name"] = uploaded.name.rsplit(".", 1)[0]
-        paths = write_dataset(frames, st.session_state["schema_name"])
+        paths = write_dataset(frames, st.session_state["schema_name"], schema=schema)
         st.session_state["sqlite_path"] = str(paths["sqlite"])
 
     _render_results(temperature, max_tokens)
@@ -96,7 +100,7 @@ def _render_results(temperature: float, max_tokens: int) -> None:
             with st.spinner(f"Refining {table_name}…"):
                 updated = regenerate_table(st.session_state["schema"], table_name, frames, config, _get_client())
             frames[table_name] = updated
-            write_dataset(frames, st.session_state["schema_name"])
+            write_dataset(frames, st.session_state["schema_name"], schema=st.session_state.get("schema"))
             st.rerun()
         except Exception as exc:  # noqa: BLE001
             st.error(f"Refinement failed: {exc}")
@@ -111,9 +115,102 @@ def _render_results(temperature: float, max_tokens: int) -> None:
         st.caption(f"SQLite database written to `{st.session_state['sqlite_path']}`")
 
 
+def _available_datasets() -> list[Path]:
+    """All generated SQLite datasets, newest first; the freshly generated one (if any) leads."""
+    dbs = sorted(DEFAULT_ROOT.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    current = st.session_state.get("sqlite_path")
+    if current and Path(current) in dbs:
+        dbs.remove(Path(current))
+        dbs.insert(0, Path(current))
+    return dbs
+
+
+def _render_chart(df: pd.DataFrame, spec: ChartSpec) -> None:
+    import plotly.express as px
+
+    title = spec.title or None
+    if spec.chart_type == "pie":
+        fig = px.pie(df, names=spec.x, values=spec.y, title=title)
+    elif spec.chart_type == "line":
+        fig = px.line(df, x=spec.x, y=spec.y, title=title)
+    elif spec.chart_type == "scatter":
+        fig = px.scatter(df, x=spec.x, y=spec.y, title=title)
+    else:
+        fig = px.bar(df, x=spec.x, y=spec.y, title=title)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_turn(entry: dict) -> None:
+    with st.chat_message(entry["role"]):
+        if entry.get("text"):
+            st.markdown(entry["text"])
+        table = entry.get("table")
+        if table is not None and not table.empty:
+            st.dataframe(table, use_container_width=True)
+        if entry.get("chart") is not None and table is not None and not table.empty:
+            _render_chart(table, entry["chart"])
+        for sql in entry.get("sql", []):
+            st.caption(f"```sql\n{sql}\n```")
+
+
 def talk_to_your_data_tab() -> None:
     st.header("Talk to your data")
-    st.info("Coming in Phase 2 — natural-language querying of the generated data.")
+
+    datasets = _available_datasets()
+    if not datasets:
+        st.info("Generate a dataset first — it will appear here for natural-language querying.")
+        return
+
+    labels = [p.stem for p in datasets]
+    chosen = st.selectbox("Dataset", labels)
+    db_path = datasets[labels.index(chosen)]
+
+    history_key = f"chat_{chosen}"
+    history: list[dict] = st.session_state.setdefault(history_key, [])
+
+    for entry in history:
+        _render_turn(entry)
+
+    question = st.chat_input("Ask a question about your data…")
+
+    # Starter prompts (schema-agnostic) to kick off a conversation in one click.
+    if not history:
+        st.caption("Try one:")
+        examples = [
+            "How many rows are in each table? Show it as a bar chart.",
+            "Give me a quick summary of what this dataset contains.",
+        ]
+        cols = st.columns(len(examples))
+        for i, example in enumerate(examples):
+            if cols[i].button(example, key=f"example_{i}"):
+                question = example
+
+    if not question:
+        return
+
+    history.append({"role": "user", "text": question})
+    _render_turn(history[-1])
+
+    prior = [(e["role"], e["text"]) for e in history[:-1] if e.get("text")]
+    try:
+        with st.spinner("Thinking…"):
+            service = QueryService(db_path, _get_client())
+            answer = service.ask(question, history=prior)
+    except Exception as exc:  # noqa: BLE001 — surface any query/auth error to the user
+        history.append({"role": "assistant", "text": f"Sorry, that query failed: {exc}"})
+        _render_turn(history[-1])
+        return
+
+    history.append(
+        {
+            "role": "assistant",
+            "text": answer.text or "(no answer)",
+            "table": answer.table,
+            "chart": answer.chart,
+            "sql": answer.sql,
+        }
+    )
+    _render_turn(history[-1])
 
 
 def main() -> None:
