@@ -40,7 +40,9 @@ def _bool(value: str | None, default: bool) -> bool:
 @lru_cache
 def get_settings() -> Settings:
     """Load settings once from the environment (after reading ``.env``)."""
-    load_dotenv()
+    # ``override=True`` so the project's ``.env`` is authoritative: a stale value left in the shell
+    # (e.g. from a previously sourced ``.env``) must not silently shadow the file.
+    load_dotenv(override=True)
     return Settings(
         google_cloud_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
         google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
