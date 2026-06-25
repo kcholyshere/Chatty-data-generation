@@ -2,32 +2,33 @@
 
 The model is given two tools and the dataset's schema, then answers questions in natural language:
 
-- ``run_sql`` — runs one read-only SELECT and returns rows for the model to reason over.
-- ``plot_chart`` — runs a SELECT and records a chart spec the UI renders locally with plotly.
+- ``run_sql`` - runs one read-only SELECT and returns rows for the model to reason over.
+- ``plot_chart`` - runs a SELECT and records a chart spec the UI renders locally with plotly.
 
-Safety: the query connection is opened read-only (``mode=ro``) so a malformed prompt can never mutate
-the data; a SELECT-only guard rejects anything else before it reaches SQLite (belt and braces).
+Safety: each query runs in a PostgreSQL read-only transaction (``postgresql_readonly=True``) so a
+malformed prompt can never mutate the data; a single-SELECT guard rejects anything else before it
+reaches the database (belt and braces).
 
-Relationships are grounded from the schema sidecar JSON written next to the ``.db`` (``df.to_sql``
-creates plain tables, so ``PRAGMA`` exposes no foreign keys). When the sidecar is absent we fall back to
-column names/types from ``PRAGMA``.
+A dataset lives in its own PostgreSQL schema (set as the ``search_path``). Relationships are grounded
+from the parsed schema stored in ``_meta.datasets`` (``to_sql`` creates plain tables, so the live
+database exposes no foreign keys); ``information_schema`` columns are the fallback when it's absent.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
 import sqlparse
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from llm.client import LLMClient
 from schema.models import Schema
-from storage.writer import schema_sidecar_path
+from storage.db import get_engine
+from storage.writer import load_schema
 
 # Rows handed back to the model per query. The full result is kept for the UI; this only caps the
 # token cost of feeding rows into the conversation.
@@ -59,9 +60,9 @@ class AnswerResult:
 def _json_safe_records(df: pd.DataFrame) -> list[dict]:
     """Records with missing/non-finite values coerced to null so the tool result is valid JSON.
 
-    Pandas NULLs surface as ``float('nan')``, which ``json`` emits as the literal ``NaN`` — invalid
+    Pandas NULLs surface as ``float('nan')``, which ``json`` emits as the literal ``NaN`` - invalid
     JSON that the Gemini API rejects (``Invalid JSON payload … Unexpected token``) when it serialises
-    the tool's return value. Round-tripping through ``to_json`` maps NaN/NaT/inf to null.
+    the tool's return value. Round-tripping through ``to_json`` maps them to null.
     """
     return json.loads(df.to_json(orient="records", date_format="iso"))
 
@@ -79,31 +80,29 @@ def _is_read_only(sql: str) -> bool:
 
 
 class QueryService:
-    def __init__(self, sqlite_path: str | Path, client: LLMClient) -> None:
-        self.sqlite_path = Path(sqlite_path)
+    def __init__(self, dataset: str, client: LLMClient) -> None:
+        self.dataset = dataset
         self.client = client
         self.schema_summary = self._build_schema_summary()
 
     # --- data access -------------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
-        """Open the database read-only so no tool call can ever mutate it."""
-        return sqlite3.connect(f"file:{self.sqlite_path}?mode=ro", uri=True)
-
     def _run_select(self, sql: str) -> pd.DataFrame:
+        """Run one SELECT inside a read-only transaction, scoped to the dataset's schema."""
         if not _is_read_only(sql):
             raise ValueError("Only a single read-only SELECT statement is allowed.")
-        with self._connect() as conn:
-            return pd.read_sql_query(sql, conn)
+        engine = get_engine()
+        with engine.connect().execution_options(postgresql_readonly=True) as conn:
+            conn.execute(text(f'SET search_path TO "{self.dataset}"'))
+            return pd.read_sql_query(text(sql), conn)
 
     # --- schema grounding --------------------------------------------------------------------
 
     def _build_schema_summary(self) -> str:
-        sidecar = schema_sidecar_path(self.sqlite_path)
-        if sidecar.exists():
-            schema = Schema.model_validate_json(sidecar.read_text(encoding="utf-8"))
+        schema = load_schema(self.dataset)
+        if schema is not None:
             return self._summarise_schema(schema)
-        return self._summarise_pragma()
+        return self._summarise_information_schema()
 
     @staticmethod
     def _summarise_schema(schema: Schema) -> str:
@@ -119,14 +118,20 @@ class QueryService:
                 lines.append(f"  FOREIGN KEY: {src} -> {ref}")
         return "\n".join(lines)
 
-    def _summarise_pragma(self) -> str:
-        with self._connect() as conn:
-            tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-            lines: list[str] = []
-            for table in tables:
-                cols = ", ".join(f"{r[1]} {r[2]}" for r in conn.execute(f"PRAGMA table_info('{table}')"))
-                lines.append(f"TABLE {table} ({cols})")
-        return "\n".join(lines)
+    def _summarise_information_schema(self) -> str:
+        engine = get_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                    "WHERE table_schema = :s ORDER BY table_name, ordinal_position"
+                ),
+                {"s": self.dataset},
+            ).all()
+        tables: dict[str, list[str]] = {}
+        for table_name, column_name, data_type in rows:
+            tables.setdefault(table_name, []).append(f"{column_name} {data_type}")
+        return "\n".join(f"TABLE {t} ({', '.join(cols)})" for t, cols in tables.items())
 
     # --- the conversational turn -------------------------------------------------------------
 
@@ -138,7 +143,7 @@ class QueryService:
             """Run a single read-only SQL SELECT against the dataset and return the rows.
 
             Args:
-                query: One SQLite SELECT (or WITH) statement using the exact table and column names
+                query: One PostgreSQL SELECT (or WITH) statement using the exact table and column names
                     from the schema. INSERT/UPDATE/DELETE/DDL are not permitted.
 
             Returns:
@@ -197,8 +202,8 @@ class QueryService:
 
     def _system_instruction(self) -> str:
         return (
-            "You are a precise data analyst for a SQLite dataset. Answer the user's questions by "
-            "querying the data with the run_sql tool (SQLite dialect, read-only SELECT only). When a "
+            "You are a precise data analyst for a PostgreSQL dataset. Answer the user's questions by "
+            "querying the data with the run_sql tool (PostgreSQL dialect, read-only SELECT only). When a "
             "chart would help, call plot_chart with a SELECT and the columns to plot instead of "
             "describing the chart. Use the exact table and column names below. If a request is "
             "ambiguous, make a reasonable assumption and state it. After querying, give a concise, "
@@ -210,8 +215,8 @@ class QueryService:
         from google.genai import types
 
         contents: list[Any] = []
-        for role, text in history or []:
+        for role, text_part in history or []:
             sdk_role = "model" if role == "assistant" else "user"
-            contents.append(types.Content(role=sdk_role, parts=[types.Part(text=text)]))
+            contents.append(types.Content(role=sdk_role, parts=[types.Part(text=text_part)]))
         contents.append(types.Content(role="user", parts=[types.Part(text=question)]))
         return contents

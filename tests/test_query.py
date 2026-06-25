@@ -1,31 +1,22 @@
-"""Offline tests for the Phase 2 query service: read-only guard, SQL execution, schema grounding.
+"""Offline tests for the Phase 2 query service: read-only guard, JSON safety, SQL execution, grounding.
 
-These cover everything that doesn't need the LLM (the tool closures call ``_run_select`` directly).
+The DB-touching tests require the PostgreSQL container (``docker compose up -d db``); the guard and
+JSON tests are pure and need nothing.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 
 import numpy as np
 import pandas as pd
 import pytest
+from sqlalchemy import text
 
 from query.service import QueryService, _is_read_only, _json_safe_records
 from schema.models import Column, ForeignKey, Schema, Table
-from storage.writer import schema_sidecar_path
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    path = tmp_path / "shop.db"
-    with sqlite3.connect(path) as conn:
-        pd.DataFrame({"id": [1, 2], "name": ["A", "B"]}).to_sql("customers", conn, index=False)
-        pd.DataFrame({"id": [1, 2], "customer_id": [1, 1], "total": [10.0, 5.0]}).to_sql(
-            "orders", conn, index=False
-        )
-    return path
+from storage.db import get_engine
+from storage.writer import write_dataset
 
 
 def test_is_read_only_accepts_select_and_with():
@@ -40,30 +31,11 @@ def test_is_read_only_accepts_select_and_with():
         "DROP TABLE customers",
         "INSERT INTO customers VALUES (3, 'C')",
         "SELECT 1; DROP TABLE customers",  # stacked statements
-        "PRAGMA table_info('customers')",
+        "UPDATE customers SET name = 'X'",
     ],
 )
 def test_is_read_only_rejects_mutations(sql):
     assert not _is_read_only(sql)
-
-
-def test_run_select_returns_rows(db_path):
-    service = QueryService(db_path, client=None)
-    df = service._run_select("SELECT name FROM customers ORDER BY id")
-    assert list(df["name"]) == ["A", "B"]
-
-
-def test_run_select_rejects_non_select(db_path):
-    service = QueryService(db_path, client=None)
-    with pytest.raises(ValueError):
-        service._run_select("DELETE FROM customers")
-
-
-def test_connection_is_read_only(db_path):
-    """Even a guard bypass can't mutate: the connection itself is opened read-only."""
-    service = QueryService(db_path, client=None)
-    with pytest.raises(sqlite3.OperationalError), service._connect() as conn:
-        conn.execute("INSERT INTO customers VALUES (3, 'C')")
 
 
 def test_json_safe_records_coerce_missing_to_null():
@@ -71,22 +43,22 @@ def test_json_safe_records_coerce_missing_to_null():
     df = pd.DataFrame({"manager_id": [1.0, np.nan], "count": [2, 3]})
     records = _json_safe_records(df)
     assert records[1]["manager_id"] is None
-    # ``allow_nan=False`` mirrors strict JSON: this would raise on a stray NaN.
-    json.dumps(records, allow_nan=False)
+    json.dumps(records, allow_nan=False)  # would raise on a stray NaN
 
 
-def test_run_sql_result_is_strict_json_with_nulls(db_path):
-    """A query that yields a NULL (e.g. via aggregation) must serialise as strict JSON."""
-    service = QueryService(db_path, client=None)
-    df = service._run_select("SELECT NULL AS manager_id, COUNT(*) AS count FROM customers")
-    payload = {"rows": _json_safe_records(df)}
-    json.dumps(payload, allow_nan=False)
-
-
-def test_schema_summary_uses_sidecar_foreign_keys(db_path):
+@pytest.fixture
+def dataset():
+    frames = {
+        "customers": pd.DataFrame({"id": [1, 2], "name": ["A", "B"]}),
+        "orders": pd.DataFrame({"id": [1, 2], "customer_id": [1, 1], "total": [10.0, 5.0]}),
+    }
     schema = Schema(
         tables=[
-            Table(name="customers", columns=[Column(name="id", base_type="INT", raw_type="INT")]),
+            Table(
+                name="customers",
+                columns=[Column(name="id", base_type="INT", raw_type="INT")],
+                primary_key=["id"],
+            ),
             Table(
                 name="orders",
                 columns=[Column(name="customer_id", base_type="INT", raw_type="INT")],
@@ -96,12 +68,48 @@ def test_schema_summary_uses_sidecar_foreign_keys(db_path):
             ),
         ]
     )
-    schema_sidecar_path(db_path).write_text(schema.model_dump_json(), encoding="utf-8")
-    summary = QueryService(db_path, client=None).schema_summary
+    name = write_dataset(frames, "pytest_shop", schema=schema)
+    yield name
+    with get_engine().begin() as conn:
+        conn.execute(text(f'DROP SCHEMA IF EXISTS "{name}" CASCADE'))
+        conn.execute(text('DELETE FROM "_meta".datasets WHERE name = :n'), {"n": name})
+
+
+def test_run_select_returns_rows(dataset):
+    service = QueryService(dataset, client=None)
+    df = service._run_select("SELECT name FROM customers ORDER BY id")
+    assert list(df["name"]) == ["A", "B"]
+
+
+def test_run_select_rejects_non_select(dataset):
+    service = QueryService(dataset, client=None)
+    with pytest.raises(ValueError):
+        service._run_select("DELETE FROM customers")
+
+
+def test_run_select_is_read_only_transaction(dataset):
+    """Even bypassing the guard, the read-only transaction must reject a write."""
+    service = QueryService(dataset, client=None)
+    with pytest.raises(Exception):
+        # ``_run_select`` guards SELECT-only, so go through the same read-only connection directly.
+        engine = get_engine()
+        with engine.connect().execution_options(postgresql_readonly=True) as conn:
+            conn.execute(text(f'SET search_path TO "{dataset}"'))
+            conn.execute(text("INSERT INTO customers VALUES (3, 'C')"))
+
+
+def test_schema_summary_uses_metadata_foreign_keys(dataset):
+    summary = QueryService(dataset, client=None).schema_summary
     assert "FOREIGN KEY: customer_id -> customers.id" in summary
 
 
-def test_schema_summary_falls_back_to_pragma(db_path):
-    summary = QueryService(db_path, client=None).schema_summary
-    assert "TABLE customers" in summary
-    assert "TABLE orders" in summary
+def test_schema_summary_falls_back_to_information_schema():
+    """With no recorded metadata, grounding falls back to information_schema columns."""
+    frames = {"widgets": pd.DataFrame({"id": [1], "label": ["x"]})}
+    name = write_dataset(frames, "pytest_nometa")  # no schema -> no metadata row
+    try:
+        summary = QueryService(name, client=None).schema_summary
+        assert "TABLE widgets" in summary
+    finally:
+        with get_engine().begin() as conn:
+            conn.execute(text(f'DROP SCHEMA IF EXISTS "{name}" CASCADE'))

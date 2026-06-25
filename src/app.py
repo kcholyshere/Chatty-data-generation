@@ -6,15 +6,13 @@ Run with: ``uv run streamlit run src/app.py``.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
 from generation.engine import GenerationConfig, generate, regenerate_table
 from query.service import ChartSpec, QueryService
 from schema.parser import parse_ddl
-from storage.writer import DEFAULT_ROOT, build_csv_zip, write_dataset
+from storage.writer import build_csv_zip, list_datasets, write_dataset
 
 st.set_page_config(page_title="Chatty Data Generation", layout="wide")
 
@@ -69,8 +67,9 @@ def data_generation_tab() -> None:
         st.session_state["schema"] = schema
         st.session_state["frames"] = frames
         st.session_state["schema_name"] = uploaded.name.rsplit(".", 1)[0]
-        paths = write_dataset(frames, st.session_state["schema_name"], schema=schema)
-        st.session_state["sqlite_path"] = str(paths["sqlite"])
+        st.session_state["dataset"] = write_dataset(
+            frames, st.session_state["schema_name"], schema=schema
+        )
 
     _render_results(temperature, max_tokens)
 
@@ -111,18 +110,18 @@ def _render_results(temperature: float, max_tokens: int) -> None:
         file_name=f"{st.session_state.get('schema_name', 'data')}.zip",
         mime="application/zip",
     )
-    if st.session_state.get("sqlite_path"):
-        st.caption(f"SQLite database written to `{st.session_state['sqlite_path']}`")
+    if st.session_state.get("dataset"):
+        st.caption(f"Stored in PostgreSQL schema `{st.session_state['dataset']}`")
 
 
-def _available_datasets() -> list[Path]:
-    """All generated SQLite datasets, newest first; the freshly generated one (if any) leads."""
-    dbs = sorted(DEFAULT_ROOT.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    current = st.session_state.get("sqlite_path")
-    if current and Path(current) in dbs:
-        dbs.remove(Path(current))
-        dbs.insert(0, Path(current))
-    return dbs
+def _available_datasets() -> list[str]:
+    """All generated datasets, newest first; the freshly generated one (if any) leads."""
+    datasets = list_datasets()
+    current = st.session_state.get("dataset")
+    if current and current in datasets:
+        datasets.remove(current)
+        datasets.insert(0, current)
+    return datasets
 
 
 def _render_chart(df: pd.DataFrame, spec: ChartSpec) -> None:
@@ -161,9 +160,7 @@ def talk_to_your_data_tab() -> None:
         st.info("Generate a dataset first — it will appear here for natural-language querying.")
         return
 
-    labels = [p.stem for p in datasets]
-    chosen = st.selectbox("Dataset", labels)
-    db_path = datasets[labels.index(chosen)]
+    chosen = st.selectbox("Dataset", datasets)
 
     history_key = f"chat_{chosen}"
     history: list[dict] = st.session_state.setdefault(history_key, [])
@@ -194,7 +191,7 @@ def talk_to_your_data_tab() -> None:
     prior = [(e["role"], e["text"]) for e in history[:-1] if e.get("text")]
     try:
         with st.spinner("Thinking…"):
-            service = QueryService(db_path, _get_client())
+            service = QueryService(chosen, _get_client())
             answer = service.ask(question, history=prior)
     except Exception as exc:  # noqa: BLE001 — surface any query/auth error to the user
         history.append({"role": "assistant", "text": f"Sorry, that query failed: {exc}"})
