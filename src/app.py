@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from generation.engine import GenerationConfig, generate, regenerate_table
+from query.guardrails import REFUSAL, check_input
 from query.service import ChartSpec, QueryService
 from schema.parser import parse_ddl
 from storage.writer import build_csv_zip, list_datasets, write_dataset
@@ -168,7 +169,7 @@ def talk_to_your_data_tab() -> None:
     for entry in history:
         _render_turn(entry)
 
-    question = st.chat_input("Ask a question about your data…")
+    question = st.chat_input("Ask a question about your data…", max_chars=500)
 
     # Starter prompts (schema-agnostic) to kick off a conversation in one click.
     if not history:
@@ -187,6 +188,12 @@ def talk_to_your_data_tab() -> None:
 
     history.append({"role": "user", "text": question})
     _render_turn(history[-1])
+
+    # Input guardrail: screen for prompt-injection / jailbreak / off-topic before querying.
+    if check_input(question, _get_client()).verdict == "unsafe":
+        history.append({"role": "assistant", "text": REFUSAL})
+        _render_turn(history[-1])
+        return
 
     prior = [(e["role"], e["text"]) for e in history[:-1] if e.get("text")]
     try:
