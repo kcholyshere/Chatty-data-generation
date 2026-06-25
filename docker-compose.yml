@@ -15,5 +15,27 @@ services:
       timeout: 3s
       retries: 10
 
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+    environment:
+      GOOGLE_GENAI_USE_VERTEXAI: "true"
+      GOOGLE_CLOUD_PROJECT: gd-gcp-gridu-genai
+      GOOGLE_CLOUD_LOCATION: global
+      GEMINI_MODEL: gemini-3.5-flash
+      GOOGLE_APPLICATION_CREDENTIALS: /tmp/adc.json
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: chatty
+      POSTGRES_USER: chatty
+      POSTGRES_PASSWORD: chatty
+    volumes:
+      # Mount host Application Default Credentials so the app can authenticate to Vertex AI.
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/tmp/adc.json:ro
+
 volumes:
   pgdata:
