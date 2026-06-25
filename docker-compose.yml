@@ -6,7 +6,8 @@ services:
       POSTGRES_PASSWORD: chatty
       POSTGRES_DB: chatty
     ports:
-      - "5432:5432"
+      # Bind to localhost only so the database is not reachable from other hosts on the network.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
