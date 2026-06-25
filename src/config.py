@@ -26,9 +26,24 @@ class Settings(BaseModel):
     langfuse_secret_key: str | None = None
     langfuse_host: str | None = None
 
+    # --- PostgreSQL ---
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "chatty"
+    postgres_user: str = "chatty"
+    postgres_password: str = "chatty"
+
     @property
     def langfuse_enabled(self) -> bool:
         return bool(self.langfuse_public_key and self.langfuse_secret_key)
+
+    @property
+    def database_url(self) -> str:
+        """SQLAlchemy URL for the psycopg (v3) driver."""
+        return (
+            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
 
 
 def _bool(value: str | None, default: bool) -> bool:
@@ -52,4 +67,9 @@ def get_settings() -> Settings:
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
         langfuse_host=os.getenv("LANGFUSE_HOST"),
+        postgres_host=os.getenv("POSTGRES_HOST", "localhost"),
+        postgres_port=int(os.getenv("POSTGRES_PORT", "5432")),
+        postgres_db=os.getenv("POSTGRES_DB", "chatty"),
+        postgres_user=os.getenv("POSTGRES_USER", "chatty"),
+        postgres_password=os.getenv("POSTGRES_PASSWORD", "chatty"),
     )

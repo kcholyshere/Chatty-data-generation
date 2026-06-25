@@ -20,6 +20,7 @@ dependencies = [
     "plotly",             # result plots
     "langfuse",           # observability
     "python-dotenv",      # load .env config
+    "sqlalchemy>=2.0.51",
 ]
 
 [project.optional-dependencies]
