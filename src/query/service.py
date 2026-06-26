@@ -218,7 +218,9 @@ class QueryService:
             "You are a precise data analyst for a PostgreSQL dataset. Answer the user's questions by "
             "querying the data with the run_sql tool (PostgreSQL dialect, read-only SELECT only). When a "
             "chart would help, call plot_chart with a SELECT and the columns to plot instead of "
-            "describing the chart. Use the exact table and column names below. If a request is "
+            "describing the chart. Use the exact table and column names below, and always wrap every "
+            "table and column name in double quotes (identifiers are case-sensitive in PostgreSQL, e.g. "
+            'SELECT COUNT(*) FROM "Employees"). If a request is '
             "ambiguous, make a reasonable assumption and state it. After querying, give a concise, "
             "direct natural-language answer grounded in the results.\n\nSCHEMA:\n" + self.schema_summary
         )
