@@ -35,18 +35,18 @@ flowchart TD
 
     frames --> storage["Storage writer<br/>src/storage/writer.py"]
     storage --> csv[(CSV + Parquet<br/>data/processed/&lt;schema&gt;/)]
-    storage --> sqlite[(SQLite DB<br/>data/processed/&lt;schema&gt;.db)]
-    storage --> sidecar[(Schema sidecar JSON<br/>&lt;schema&gt;.schema.json<br/>cols/PKs/FKs for grounding)]
+    storage --> postgres[(PostgreSQL<br/>one schema per dataset)]
+    storage --> meta[(_meta.datasets table<br/>cols/PKs/FKs for grounding)]
 
     frames --> preview["UI: table preview,<br/>per-table refine, CSV-zip download"]
 
     %% --- Phase 2: Talk to your data ---
     question([User question]) --> chat["Chat UI<br/>src/app.py"]
     chat --> service["Query service<br/>src/query/service.py"]
-    sidecar -->|relationships| service
+    meta -->|relationships| service
     service <-->|chat_with_tools_stream<br/>manual tool loop, streamed text| llm
-    service -->|run_sql / plot_chart| roconn["read-only SELECT<br/>(mode=ro + guard)"]
-    roconn --> sqlite
+    service -->|run_sql / plot_chart| roconn["read-only SELECT<br/>(read-only txn + single-SELECT guard)"]
+    roconn --> postgres
     service --> answer["Answer: text + table +<br/>plotly chart spec"]
     answer --> chat
 ```
