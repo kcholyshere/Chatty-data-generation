@@ -1,13 +1,15 @@
 """Wrapper around the Google GenAI SDK for structured (JSON-schema-constrained) generation.
 
 The wrapper exposes one core method, :meth:`LLMClient.generate_structured`, which asks Gemini to
-return data matching a Pydantic schema, and wraps each call in best-effort Langfuse tracing.
+return data matching a Pydantic schema. Langfuse tracing is handled by auto-instrumenting the SDK
+(see :func:`setup_langfuse`), so the call methods themselves carry no tracing code.
 """
 
 from __future__ import annotations
 
 import contextlib
 import random
+import threading
 import time
 from collections.abc import Iterator
 from typing import Any, TypeVar, get_args, get_origin
@@ -20,6 +22,35 @@ from config import Settings, get_settings
 from schema.models import Table
 
 T = TypeVar("T", bound=BaseModel)
+
+_langfuse_lock = threading.Lock()
+_langfuse_ready = False
+
+
+def setup_langfuse(settings: Settings) -> None:
+    """Instrument the Google GenAI SDK so every model call is traced to Langfuse. Runs once.
+
+    Uses the OpenInference ``GoogleGenAIInstrumentor`` (OpenTelemetry), which auto-captures the model
+    name, token usage, input/output, observation type, streaming and tool calls - the approach
+    Langfuse recommends over hand-written spans. ``get_client()`` must run first so the instrumentor
+    binds to Langfuse's tracer provider. A no-op when keys are absent; never raises, so observability
+    can never break generation.
+    """
+    global _langfuse_ready
+    if _langfuse_ready or not settings.langfuse_enabled:
+        return
+    with _langfuse_lock:
+        if _langfuse_ready:
+            return
+        try:
+            from langfuse import get_client
+            from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
+
+            get_client()  # initialise Langfuse's OTel tracer provider from the env keys
+            GoogleGenAIInstrumentor().instrument()
+            _langfuse_ready = True
+        except Exception:
+            pass
 
 
 def _parse_response_text(text: str, schema: object) -> Any:
@@ -67,7 +98,7 @@ class LLMClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._client = self._build_client()
-        self._langfuse = self._build_langfuse()
+        setup_langfuse(self.settings)
 
     def _build_client(self) -> genai.Client:
         s = self.settings
@@ -81,16 +112,6 @@ class LLMClient:
             return genai.Client(api_key=s.gemini_api_key)
         # Fall back to ambient credentials / env (e.g. GOOGLE_API_KEY).
         return genai.Client()
-
-    def _build_langfuse(self) -> Any | None:
-        if not self.settings.langfuse_enabled:
-            return None
-        try:
-            from langfuse import get_client
-
-            return get_client()
-        except Exception:
-            return None
 
     def generate_structured(
         self,
@@ -115,9 +136,7 @@ class LLMClient:
             system_instruction=system_instruction,
             thinking_config=types.ThinkingConfig(thinking_budget=0) if disable_thinking else None,
         )
-        with self._trace("generate_structured", prompt, temperature) as generation:
-            response = self._call_with_retry(prompt, config)
-            self._record_output(generation, response.text or "", response)
+        response = self._call_with_retry(prompt, config)
         if response.parsed is not None:
             return response.parsed
         # The SDK did not populate ``parsed`` (e.g. the JSON was truncated at ``max_tokens``).
@@ -153,37 +172,33 @@ class LLMClient:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         contents = list(contents)
-        with self._trace("chat_with_tools_stream", str(contents), temperature) as generation:
-            rendered: list[str] = []
-            for _ in range(max_rounds):
-                model_parts: list[Any] = []
-                calls: list[Any] = []
-                for chunk in self._stream_with_retry(contents, config):
-                    candidate = chunk.candidates[0] if chunk.candidates else None
-                    for part in candidate.content.parts if candidate and candidate.content else []:
-                        model_parts.append(part)
-                        if part.text:
-                            rendered.append(part.text)
-                            yield part.text
-                        if part.function_call is not None:
-                            calls.append(part.function_call)
-                if not calls:
-                    break
-                contents.append(types.Content(role="model", parts=model_parts))
-                contents.append(
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part(
-                                function_response=types.FunctionResponse(
-                                    name=c.name, response=fns[c.name](**dict(c.args))
-                                )
+        for _ in range(max_rounds):
+            model_parts: list[Any] = []
+            calls: list[Any] = []
+            for chunk in self._stream_with_retry(contents, config):
+                candidate = chunk.candidates[0] if chunk.candidates else None
+                for part in candidate.content.parts if candidate and candidate.content else []:
+                    model_parts.append(part)
+                    if part.text:
+                        yield part.text
+                    if part.function_call is not None:
+                        calls.append(part.function_call)
+            if not calls:
+                return
+            contents.append(types.Content(role="model", parts=model_parts))
+            contents.append(
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                name=c.name, response=fns[c.name](**dict(c.args))
                             )
-                            for c in calls
-                        ],
-                    )
+                        )
+                        for c in calls
+                    ],
                 )
-            self._record_output(generation, "".join(rendered))
+            )
 
     def _stream_with_retry(self, contents: Any, config: types.GenerateContentConfig, attempts: int = 4):
         """Yield streamed chunks, retrying transient 429/5xx errors only before the first chunk.
@@ -193,8 +208,12 @@ class LLMClient:
         """
         for attempt in range(attempts):
             try:
-                stream = self._client.models.generate_content_stream(
-                    model=self.settings.gemini_model, contents=contents, config=config
+                # ``iter()`` because Langfuse's SDK instrumentation wraps the result in an iterable
+                # that is not itself an iterator (the raw SDK stream is), which ``next()`` needs.
+                stream = iter(
+                    self._client.models.generate_content_stream(
+                        model=self.settings.gemini_model, contents=contents, config=config
+                    )
                 )
                 first = next(stream, None)
             except (errors.ClientError, errors.ServerError) as exc:
@@ -220,42 +239,6 @@ class LLMClient:
                 if not transient or attempt == attempts - 1:
                     raise
                 time.sleep(min(2**attempt + random.uniform(0, 1), 30))
-
-    @contextlib.contextmanager
-    def _trace(self, name: str, input_: str, temperature: float) -> Iterator[Any | None]:
-        """Open a Langfuse generation span for one model call, yielding it so the caller can record
-        the output (``langfuse>=3`` renamed ``start_as_current_generation`` to
-        ``start_as_current_observation(as_type="generation")``). A no-op yielding ``None`` when
-        Langfuse is unconfigured; any tracing error is swallowed so observability never breaks
-        generation."""
-        if self._langfuse is None:
-            yield None
-            return
-        try:
-            with self._langfuse.start_as_current_observation(
-                name=name,
-                as_type="generation",
-                input=input_,
-                model=self.settings.gemini_model,
-                model_parameters={"temperature": temperature},
-            ) as generation:
-                yield generation
-        except Exception:
-            yield None
-
-    @staticmethod
-    def _record_output(generation: Any | None, output: str, response: Any | None = None) -> None:
-        """Record the model output (and token usage if available) on a Langfuse generation span."""
-        if generation is None:
-            return
-        usage = getattr(response, "usage_metadata", None)
-        usage_details = (
-            {"input": usage.prompt_token_count, "output": usage.candidates_token_count}
-            if usage is not None
-            else None
-        )
-        with contextlib.suppress(Exception):
-            generation.update(output=output, usage_details=usage_details)
 
 
 def make_ddl_fallback(client: LLMClient):
