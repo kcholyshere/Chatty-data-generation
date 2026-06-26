@@ -220,7 +220,11 @@ class QueryService:
             "chart would help, call plot_chart with a SELECT and the columns to plot instead of "
             "describing the chart. Use the exact table and column names below, and always wrap every "
             "table and column name in double quotes (identifiers are case-sensitive in PostgreSQL, e.g. "
-            'SELECT COUNT(*) FROM "Employees"). If a request is '
+            'SELECT COUNT(*) FROM "Employees"). When the user asks to "add", "create", or "fill" a '
+            "column, or otherwise transform the data, satisfy it as a derived/computed column in your "
+            "SELECT (expressions, CASE, COALESCE, or window functions like row_number()) - this returns "
+            "a shaped result and never alters the stored data, so do NOT refuse such requests as "
+            "DDL/DML; you are only shaping the query output. If a request is "
             "ambiguous, make a reasonable assumption and state it. After querying, give a concise, "
             "direct natural-language answer grounded in the results.\n\nSCHEMA:\n" + self.schema_summary
         )
