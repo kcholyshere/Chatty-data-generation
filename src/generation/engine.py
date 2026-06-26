@@ -161,8 +161,11 @@ def _sequential_pk_columns(table: Table) -> set[str]:
 def _generate_content(client: ContentClient, plans: list[_Plan], config: GenerationConfig) -> dict[str, list[dict]]:
     """Run every content batch (across all tables) concurrently; return rows grouped by table name."""
     results: dict[str, list[dict]] = {table.name: [] for table, _, _, _ in plans}
+    # A distinct variety seed per batch decorrelates parallel batches that would otherwise share the same
+    # prompt and reach for the same common values, producing near-duplicate non-unique columns. Drawn here
+    # (single-threaded) so a configured `seed` keeps generation deterministic.
     jobs = [
-        (table, content_cols, row_model, k)
+        (table, content_cols, row_model, k, random.randint(1, 9_999_999))
         for (table, content_cols, row_model, n) in plans
         for k in _batch_sizes(n, config.batch_size)
     ]
@@ -171,8 +174,8 @@ def _generate_content(client: ContentClient, plans: list[_Plan], config: Generat
 
     with ThreadPoolExecutor(max_workers=max(1, config.concurrency)) as executor:
         futures = {
-            executor.submit(_run_batch, client, table, content_cols, row_model, k, config): table.name
-            for (table, content_cols, row_model, k) in jobs
+            executor.submit(_run_batch, client, table, content_cols, row_model, k, variety, config): table.name
+            for (table, content_cols, row_model, k, variety) in jobs
         }
         for future in as_completed(futures):
             results[futures[future]].extend(future.result())
@@ -185,10 +188,11 @@ def _run_batch(
     content_cols: list[Column],
     row_model: type[BaseModel],
     k: int,
+    variety: int,
     config: GenerationConfig,
 ) -> list[dict]:
     """Generate exactly ``k`` content rows for one table (one LLM call, padded if the model returns fewer)."""
-    prompt = _build_prompt(table, content_cols, k, config.user_prompt)
+    prompt = _build_prompt(table, content_cols, k, config.user_prompt, variety)
     items = client.generate_structured(
         prompt,
         list[row_model],
@@ -214,7 +218,7 @@ def _to_dict(item: object) -> dict:
     return dict(item)  # type: ignore[arg-type]
 
 
-def _build_prompt(table: Table, content_cols: list[Column], k: int, user_prompt: str) -> str:
+def _build_prompt(table: Table, content_cols: list[Column], k: int, user_prompt: str, variety: int = 0) -> str:
     lines = [
         f"Generate {k} realistic, varied rows for the SQL table '{table.name}'.",
         "Each row is a JSON object with exactly these fields:",
@@ -235,6 +239,11 @@ def _build_prompt(table: Table, content_cols: list[Column], k: int, user_prompt:
         lines.append(f"- {col.name} ({col.raw_type}){suffix}")
     if user_prompt.strip():
         lines.append("\nAdditional instructions: " + user_prompt.strip())
+    if variety:
+        lines.append(
+            f"\nVariety seed {variety}: make this batch distinct — vary every unconstrained field widely and "
+            "avoid the most common or default values, so these rows do not overlap with other batches."
+        )
     lines.append("\nReturn a JSON array of row objects.")
     return "\n".join(lines)
 

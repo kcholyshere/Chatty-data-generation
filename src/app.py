@@ -7,6 +7,7 @@ Run with: ``uv run streamlit run src/app.py``.
 from __future__ import annotations
 
 import contextlib
+import time
 import uuid
 
 import pandas as pd
@@ -71,10 +72,15 @@ def data_generation_tab() -> None:
         st.session_state["gen_config"] = config
         try:
             with st.spinner("Generating synthetic data…"):
+                started = time.perf_counter()
                 frames = generate(schema, config, _get_client())
+                elapsed = time.perf_counter() - started
         except Exception as exc:  # noqa: BLE001 — surface any generation/auth error to the user
             st.error(f"Generation failed: {exc}")
             return
+
+        total_rows = sum(len(df) for df in frames.values())
+        st.caption(f"Generated {total_rows} rows across {len(frames)} tables in {elapsed:.1f}s.")
 
         st.session_state["schema"] = schema
         st.session_state["frames"] = frames
