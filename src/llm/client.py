@@ -53,6 +53,32 @@ def setup_langfuse(settings: Settings) -> None:
             pass
 
 
+@contextlib.contextmanager
+def trace_chat_turn(question: str, session_id: str) -> Iterator[Any | None]:
+    """Group one 'Talk to your data' turn into a single Langfuse trace named ``chat-turn``.
+
+    Without this, each tool round is auto-instrumented as its own root trace; this parent span nests
+    them, sets the trace's input to just the user question (not internal args), tags it for the query
+    feature, and links it to the conversation's ``session_id`` so multi-turn chats group in the
+    Sessions view. Yields the Langfuse client (or ``None`` when tracing is off) so the caller can set
+    the trace output once the answer is known. Never raises.
+    """
+    if not _langfuse_ready:
+        yield None
+        return
+    try:
+        from langfuse import get_client, propagate_attributes
+
+        client = get_client()
+        with (
+            propagate_attributes(session_id=session_id, tags=["talk-to-data"], trace_name="chat-turn"),
+            client.start_as_current_observation(as_type="span", name="chat-turn", input=question),
+        ):
+            yield client
+    except Exception:
+        yield None
+
+
 def _parse_response_text(text: str, schema: object) -> Any:
     """Parse JSON text into ``schema``, salvaging complete objects if the array was truncated."""
     try:

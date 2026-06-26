@@ -6,10 +6,14 @@ Run with: ``uv run streamlit run src/app.py``.
 
 from __future__ import annotations
 
+import contextlib
+import uuid
+
 import pandas as pd
 import streamlit as st
 
 from generation.engine import GenerationConfig, generate, regenerate_table
+from llm.client import trace_chat_turn
 from query.guardrails import REFUSAL, check_input
 from query.service import ChartSpec, QueryService
 from schema.parser import parse_ddl
@@ -23,6 +27,13 @@ def _get_client():
     from llm.client import LLMClient
 
     return LLMClient()
+
+
+def _chat_session_id(dataset: str) -> str:
+    """Stable Langfuse session id for this browser session + dataset, so a conversation's turns
+    group together in the Sessions view."""
+    uid = st.session_state.setdefault("session_uid", uuid.uuid4().hex)
+    return f"{dataset}:{uid}"
 
 
 def data_generation_tab() -> None:
@@ -200,7 +211,7 @@ def talk_to_your_data_tab() -> None:
         service = QueryService(chosen, _get_client())
     answer, stream = service.ask_stream(question, history=prior)
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant"), trace_chat_turn(question, _chat_session_id(chosen)) as tracer:
         try:
             text = st.write_stream(stream)  # streams the model's text deltas live
         except Exception as exc:  # noqa: BLE001 — surface any query/auth error to the user
@@ -215,6 +226,9 @@ def talk_to_your_data_tab() -> None:
                 _render_chart(answer.table, answer.chart)
         for sql in answer.sql:
             st.caption(f"```sql\n{sql}\n```")
+        if tracer is not None:  # record the user question + final answer as the trace's I/O
+            with contextlib.suppress(Exception):
+                tracer.set_current_trace_io(input=question, output=text)
 
     history.append(
         {
