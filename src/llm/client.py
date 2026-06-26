@@ -115,8 +115,9 @@ class LLMClient:
             system_instruction=system_instruction,
             thinking_config=types.ThinkingConfig(thinking_budget=0) if disable_thinking else None,
         )
-        with self._trace(prompt, temperature):
+        with self._trace("generate_structured", prompt, temperature) as generation:
             response = self._call_with_retry(prompt, config)
+            self._record_output(generation, response.text or "", response)
         if response.parsed is not None:
             return response.parsed
         # The SDK did not populate ``parsed`` (e.g. the JSON was truncated at ``max_tokens``).
@@ -152,7 +153,8 @@ class LLMClient:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         contents = list(contents)
-        with self._trace(str(contents), temperature):
+        with self._trace("chat_with_tools_stream", str(contents), temperature) as generation:
+            rendered: list[str] = []
             for _ in range(max_rounds):
                 model_parts: list[Any] = []
                 calls: list[Any] = []
@@ -161,11 +163,12 @@ class LLMClient:
                     for part in candidate.content.parts if candidate and candidate.content else []:
                         model_parts.append(part)
                         if part.text:
+                            rendered.append(part.text)
                             yield part.text
                         if part.function_call is not None:
                             calls.append(part.function_call)
                 if not calls:
-                    return
+                    break
                 contents.append(types.Content(role="model", parts=model_parts))
                 contents.append(
                     types.Content(
@@ -180,6 +183,7 @@ class LLMClient:
                         ],
                     )
                 )
+            self._record_output(generation, "".join(rendered))
 
     def _stream_with_retry(self, contents: Any, config: types.GenerateContentConfig, attempts: int = 4):
         """Yield streamed chunks, retrying transient 429/5xx errors only before the first chunk.
@@ -218,21 +222,40 @@ class LLMClient:
                 time.sleep(min(2**attempt + random.uniform(0, 1), 30))
 
     @contextlib.contextmanager
-    def _trace(self, prompt: str, temperature: float) -> Iterator[None]:
+    def _trace(self, name: str, input_: str, temperature: float) -> Iterator[Any | None]:
+        """Open a Langfuse generation span for one model call, yielding it so the caller can record
+        the output (``langfuse>=3`` renamed ``start_as_current_generation`` to
+        ``start_as_current_observation(as_type="generation")``). A no-op yielding ``None`` when
+        Langfuse is unconfigured; any tracing error is swallowed so observability never breaks
+        generation."""
         if self._langfuse is None:
-            yield
+            yield None
             return
         try:
-            with self._langfuse.start_as_current_generation(
-                name="generate_structured",
+            with self._langfuse.start_as_current_observation(
+                name=name,
+                as_type="generation",
+                input=input_,
                 model=self.settings.gemini_model,
-                input=prompt,
                 model_parameters={"temperature": temperature},
-            ):
-                yield
+            ) as generation:
+                yield generation
         except Exception:
-            # Never let observability break generation.
-            yield
+            yield None
+
+    @staticmethod
+    def _record_output(generation: Any | None, output: str, response: Any | None = None) -> None:
+        """Record the model output (and token usage if available) on a Langfuse generation span."""
+        if generation is None:
+            return
+        usage = getattr(response, "usage_metadata", None)
+        usage_details = (
+            {"input": usage.prompt_token_count, "output": usage.candidates_token_count}
+            if usage is not None
+            else None
+        )
+        with contextlib.suppress(Exception):
+            generation.update(output=output, usage_details=usage_details)
 
 
 def make_ddl_fallback(client: LLMClient):

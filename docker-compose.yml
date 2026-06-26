@@ -29,6 +29,10 @@ services:
       GOOGLE_CLOUD_LOCATION: global
       GEMINI_MODEL: gemini-3.5-flash
       GOOGLE_APPLICATION_CREDENTIALS: /tmp/adc.json
+      # Langfuse observability — substituted from the project .env (empty = tracing disabled).
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_DB: chatty
