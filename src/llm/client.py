@@ -122,7 +122,7 @@ class LLMClient:
         # The SDK did not populate ``parsed`` (e.g. the JSON was truncated at ``max_tokens``).
         return _parse_response_text(response.text or "", schema)
 
-    def chat_with_tools(
+    def chat_with_tools_stream(
         self,
         contents: Any,
         tools: list[Any],
@@ -130,22 +130,79 @@ class LLMClient:
         system_instruction: str | None = None,
         temperature: float = 0.0,
         disable_thinking: bool = True,
-    ) -> Any:
-        """Run a tool-using turn and return the raw SDK response (final text after any tool calls).
+        max_rounds: int = 8,
+    ) -> Iterator[str]:
+        """Stream a tool-using turn, yielding the final answer's text deltas as they arrive.
 
-        ``tools`` are plain Python callables; the SDK's automatic function calling converts them to
-        declarations, executes the calls the model requests, feeds results back, and loops until the
-        model returns text. Used by the Phase 2 "Talk to your data" query service. Low temperature by
-        default for reliable, deterministic tool selection (see ``function_calling.md`` best practices).
+        ``tools`` are plain Python callables. We run the function-calling loop manually (automatic
+        function calling is disabled) so the final answer can stream rather than only being returned
+        whole: each round streams the model's parts, executes any function calls it requests (by
+        name), feeds the results back, and loops until a round makes no calls. The model's raw parts
+        are appended verbatim so Gemini's required ``thought_signature`` on function-call parts is
+        preserved (rebuilding the parts strips it and the API rejects the next turn). Bounded by
+        ``max_rounds`` so a model that keeps calling tools cannot loop forever. Low temperature by
+        default for deterministic tool selection (see ``function_calling.md`` best practices).
         """
+        fns = {t.__name__: t for t in tools}
         config = types.GenerateContentConfig(
             tools=tools,
             system_instruction=system_instruction,
             temperature=temperature,
             thinking_config=types.ThinkingConfig(thinking_budget=0) if disable_thinking else None,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
+        contents = list(contents)
         with self._trace(str(contents), temperature):
-            return self._call_with_retry(contents, config)
+            for _ in range(max_rounds):
+                model_parts: list[Any] = []
+                calls: list[Any] = []
+                for chunk in self._stream_with_retry(contents, config):
+                    candidate = chunk.candidates[0] if chunk.candidates else None
+                    for part in candidate.content.parts if candidate and candidate.content else []:
+                        model_parts.append(part)
+                        if part.text:
+                            yield part.text
+                        if part.function_call is not None:
+                            calls.append(part.function_call)
+                if not calls:
+                    return
+                contents.append(types.Content(role="model", parts=model_parts))
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    name=c.name, response=fns[c.name](**dict(c.args))
+                                )
+                            )
+                            for c in calls
+                        ],
+                    )
+                )
+
+    def _stream_with_retry(self, contents: Any, config: types.GenerateContentConfig, attempts: int = 4):
+        """Yield streamed chunks, retrying transient 429/5xx errors only before the first chunk.
+
+        Once a chunk has been yielded, mid-stream errors propagate so the caller never sees the
+        partial text of a failed attempt repeated by a retry.
+        """
+        for attempt in range(attempts):
+            try:
+                stream = self._client.models.generate_content_stream(
+                    model=self.settings.gemini_model, contents=contents, config=config
+                )
+                first = next(stream, None)
+            except (errors.ClientError, errors.ServerError) as exc:
+                transient = isinstance(exc, errors.ServerError) or getattr(exc, "code", None) == 429
+                if not transient or attempt == attempts - 1:
+                    raise
+                time.sleep(min(2**attempt + random.uniform(0, 1), 30))
+                continue
+            if first is not None:
+                yield first
+            yield from stream
+            return
 
     def _call_with_retry(self, contents: Any, config: types.GenerateContentConfig, attempts: int = 4):
         """Call the model, retrying transient rate-limit (429) and server (5xx) errors with backoff."""

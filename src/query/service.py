@@ -7,7 +7,7 @@ The model is given two tools and the dataset's schema, then answers questions in
 
 Safety: each query runs in a PostgreSQL read-only transaction (``postgresql_readonly=True``) so a
 malformed prompt can never mutate the data; a single-SELECT guard rejects anything else before it
-reaches the database (belt and braces).
+reaches the database.
 
 A dataset lives in its own PostgreSQL schema (set as the ``search_path``). Relationships are grounded
 from the parsed schema stored in ``_meta.datasets`` (``to_sql`` creates plain tables, so the live
@@ -17,6 +17,7 @@ database exposes no foreign keys); ``information_schema`` columns are the fallba
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -135,8 +136,16 @@ class QueryService:
 
     # --- the conversational turn -------------------------------------------------------------
 
-    def ask(self, question: str, history: list[tuple[str, str]] | None = None) -> AnswerResult:
-        """Answer ``question`` against the dataset, optionally with prior ``(role, text)`` turns."""
+    def ask_stream(
+        self, question: str, history: list[tuple[str, str]] | None = None
+    ) -> tuple[AnswerResult, Iterator[str]]:
+        """Answer ``question`` against the dataset, streaming the text.
+
+        Returns the (initially empty) :class:`AnswerResult` and a generator of text deltas. The tool
+        calls run while the generator is consumed, so ``result.table``/``chart``/``sql`` are populated
+        by the time it is exhausted; ``result.text`` accumulates the streamed deltas. Optional prior
+        ``(role, text)`` turns give the model conversation context.
+        """
         result = AnswerResult(text="")
 
         def run_sql(query: str) -> dict:
@@ -192,13 +201,17 @@ class QueryService:
         }
 
         contents = self._build_contents(question, history)
-        response = self.client.chat_with_tools(
-            contents,
-            tools=[run_sql, plot_chart],
-            system_instruction=self._system_instruction(),
-        )
-        result.text = (response.text or "").strip()
-        return result
+
+        def deltas() -> Iterator[str]:
+            for delta in self.client.chat_with_tools_stream(
+                contents,
+                tools=[run_sql, plot_chart],
+                system_instruction=self._system_instruction(),
+            ):
+                result.text += delta
+                yield delta
+
+        return result, deltas()
 
     def _system_instruction(self) -> str:
         return (

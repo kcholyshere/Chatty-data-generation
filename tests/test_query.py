@@ -98,6 +98,20 @@ def test_run_select_is_read_only_transaction(dataset):
             conn.execute(text("INSERT INTO customers VALUES (3, 'C')"))
 
 
+def test_ask_stream_accumulates_text(dataset):
+    """ask_stream yields the model's text deltas and accumulates them into result.text."""
+
+    class _StubClient:
+        def chat_with_tools_stream(self, *args, **kwargs):
+            yield "Hello"
+            yield " world"
+
+    service = QueryService(dataset, client=_StubClient())
+    result, stream = service.ask_stream("hi")
+    assert "".join(stream) == "Hello world"  # deltas streamed in order
+    assert result.text == "Hello world"  # and accumulated onto the result
+
+
 def test_schema_summary_uses_metadata_foreign_keys(dataset):
     summary = QueryService(dataset, client=None).schema_summary
     assert "FOREIGN KEY: customer_id -> customers.id" in summary

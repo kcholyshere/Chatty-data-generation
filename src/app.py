@@ -196,25 +196,35 @@ def talk_to_your_data_tab() -> None:
         return
 
     prior = [(e["role"], e["text"]) for e in history[:-1] if e.get("text")]
-    try:
-        with st.spinner("Thinking…"):
-            service = QueryService(chosen, _get_client())
-            answer = service.ask(question, history=prior)
-    except Exception as exc:  # noqa: BLE001 — surface any query/auth error to the user
-        history.append({"role": "assistant", "text": f"Sorry, that query failed: {exc}"})
-        _render_turn(history[-1])
-        return
+    with st.spinner("Thinking…"):
+        service = QueryService(chosen, _get_client())
+    answer, stream = service.ask_stream(question, history=prior)
+
+    with st.chat_message("assistant"):
+        try:
+            text = st.write_stream(stream)  # streams the model's text deltas live
+        except Exception as exc:  # noqa: BLE001 — surface any query/auth error to the user
+            text = f"Sorry, that query failed: {exc}"
+            st.markdown(text)
+            history.append({"role": "assistant", "text": text})
+            return
+        # Tool side-effects (table/chart/sql) are populated once the stream is exhausted.
+        if answer.table is not None and not answer.table.empty:
+            st.dataframe(answer.table, use_container_width=True)
+            if answer.chart is not None:
+                _render_chart(answer.table, answer.chart)
+        for sql in answer.sql:
+            st.caption(f"```sql\n{sql}\n```")
 
     history.append(
         {
             "role": "assistant",
-            "text": answer.text or "(no answer)",
+            "text": text or "(no answer)",
             "table": answer.table,
             "chart": answer.chart,
             "sql": answer.sql,
         }
     )
-    _render_turn(history[-1])
 
 
 def main() -> None:
