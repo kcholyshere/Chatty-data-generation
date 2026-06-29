@@ -196,19 +196,12 @@ def talk_to_your_data_tab() -> None:
     history_key = f"chat_{chosen}"
     history: list[dict] = st.session_state.setdefault(history_key, [])
 
-    if history and st.button("↺ Reset conversation", help="Clear this chat and start fresh. Your generated data is kept."):
-        st.session_state[history_key] = []
-        st.session_state["session_uid"] = uuid.uuid4().hex  # fresh Langfuse session for the new conversation
-        st.rerun()
-
-    for entry in history:
-        _render_turn(entry)
-
+    # Resolve the pending prompt first (chat_input pins to the bottom regardless of call order) so the
+    # widgets below can react to it within the same run.
     question = st.chat_input("Ask a question about your data…", max_chars=500)
 
-    # Starter prompts (schema-agnostic) to kick off a conversation in one click. Hidden once the chat
-    # has started OR the moment any prompt is submitted this run (else they flash during the first turn,
-    # because history is only appended further down).
+    # Starter prompts (schema-agnostic) to kick off a conversation in one click. Only on a fresh chat,
+    # and hidden the moment any prompt is submitted (else they flash during the first turn).
     if not history and not question:
         st.caption("Try one:")
         examples = [
@@ -219,6 +212,18 @@ def talk_to_your_data_tab() -> None:
         for i, example in enumerate(examples):
             if cols[i].button(example, key=f"example_{i}"):
                 question = example
+
+    # Reset sits above the messages. Shown once there is history OR a prompt is being submitted this run,
+    # so it already appears on the very first turn (history is only appended further down).
+    if (history or question) and st.button(
+        "↺ Reset conversation", help="Clear this chat and start fresh. Your generated data is kept."
+    ):
+        st.session_state[history_key] = []
+        st.session_state["session_uid"] = uuid.uuid4().hex  # fresh Langfuse session for the new conversation
+        st.rerun()
+
+    for entry in history:
+        _render_turn(entry)
 
     if not question:
         return
