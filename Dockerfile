@@ -5,6 +5,7 @@ WORKDIR /app
 # Install dependencies first (cached) then the project source.
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+COPY .streamlit ./.streamlit
 RUN uv sync --frozen --no-dev
 
 EXPOSE 8501

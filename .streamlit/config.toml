@@ -1,0 +1,4 @@
+[theme]
+# Stronger, clearly-visible blue accent for interactive elements (sliders, checkboxes,
+# nav selection, primary button) - the default tint was barely visible.
+primaryColor = "#1565C0"

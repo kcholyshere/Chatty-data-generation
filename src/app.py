@@ -55,12 +55,16 @@ def data_generation_tab() -> None:
     )
 
     with st.expander("Speed settings"):
-        s1, s2 = st.columns(2)
+        s1, s2 = st.columns(2, vertical_alignment="center")
         concurrency = s1.slider(
             "Generation speed", 1, 24, 8,
             help="How many requests run at the same time. Higher is faster but uses more capacity.",
         )
-        disable_thinking = s2.checkbox("Faster mode", value=True, help="Skips the model's extra reasoning step.")
+        disable_thinking = s2.checkbox(
+            "Faster mode", value=True,
+            help="Skips the model's extra reasoning step to speed things up. Useful for generating "
+            "large data quantities, with a small trade-off in robustness.",
+        )
 
     if uploaded is not None and st.button("Generate", type="primary"):
         ddl = uploaded.getvalue().decode("utf-8", errors="replace")
@@ -258,11 +262,11 @@ def talk_to_your_data_tab() -> None:
 
 def main() -> None:
     st.sidebar.title("Chatty Data Generation")
-    tab = st.sidebar.radio("Navigate", ["Data Generation", "Talk to your data"])
-    if tab == "Data Generation":
-        data_generation_tab()
-    else:
-        talk_to_your_data_tab()
+    pages = [
+        st.Page(data_generation_tab, title="Data Generation"),
+        st.Page(talk_to_your_data_tab, title="Talk to your data"),
+    ]
+    st.navigation(pages).run()
 
 
 main()
