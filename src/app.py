@@ -196,6 +196,11 @@ def talk_to_your_data_tab() -> None:
     history_key = f"chat_{chosen}"
     history: list[dict] = st.session_state.setdefault(history_key, [])
 
+    if history and st.button("↺ Reset conversation", help="Clear this chat and start fresh. Your generated data is kept."):
+        st.session_state[history_key] = []
+        st.session_state["session_uid"] = uuid.uuid4().hex  # fresh Langfuse session for the new conversation
+        st.rerun()
+
     for entry in history:
         _render_turn(entry)
 
@@ -261,11 +266,14 @@ def talk_to_your_data_tab() -> None:
 
 
 def main() -> None:
-    st.sidebar.title("Chatty Data Generation")
-    pages = [
-        st.Page(data_generation_tab, title="Data Generation"),
-        st.Page(talk_to_your_data_tab, title="Talk to your data"),
-    ]
+    # Grouping the pages under a section label renders the headline ABOVE the nav items;
+    # st.navigation always pins its menu to the top of the sidebar, so a separate title would sit below.
+    pages = {
+        "Chatty Data Generation": [
+            st.Page(data_generation_tab, title="Data Generation"),
+            st.Page(talk_to_your_data_tab, title="Talk to your data"),
+        ],
+    }
     st.navigation(pages).run()
 
 
