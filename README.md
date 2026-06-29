@@ -2,14 +2,27 @@
 
 A conversational AI app with two functions:
 
-1. **Synthetic data generation** — parse a SQL DDL schema and generate valid synthetic data that respects all constraints (especially foreign keys).
-2. **Talk to your data** — query the generated data in natural language, with results rendered as text, tables, and plots.
+1. **Synthetic data generation** - parse a SQL DDL schema and generate valid synthetic data that respects all constraints (especially foreign keys).
+2. **Talk to your data** - query the generated data in natural language, with results rendered as text, tables, and plots.
+
+<br>
+
+![Data generation tab](assets/ss1.png)
+
+<details>
+<summary>Show "Talk to your data" tab screenshot</summary>
+
+<br>
+
+![Talk to your data tab](assets/ss2.png)
+
+</details>
 
 ## Tech stack
 
-- **LLM:** Gemini 3.5 Flash (2.0+ supported) — function calling, structured/JSON output.
+- **LLM:** Gemini 3.5 Flash (2.0+ supported) - function calling, structured/JSON output.
 - **SDK:** Google GenAI SDK (Vertex AI auth via a GCP project).
-- **UI:** Streamlit or Gradio.
+- **UI:** Streamlit.
 - **DB:** PostgreSQL.
 - **Container:** Docker.
 - **Observability:** Langfuse.
@@ -17,63 +30,46 @@ A conversational AI app with two functions:
 ## Project layout
 
 ```
-src/              application source code
-data/             generated/working data (raw → interim → processed)
-references/       sample schemas and prompting/background material
-reports/figures/  generated plots & figures
+src/        application source code
+examples/   sample SQL schemas to try
+assets/     screenshots used in this README
+tests/      test suite
 ```
 
-## Quick start (recommended)
+## Quick start
 
-This is the easiest way to run the app. You do **not** need to know how to code — just follow the steps in order. Everything runs inside Docker, so you don't have to install Python, a database, or anything else by hand.
+The fastest way to run the app. Everything (app + PostgreSQL) runs in Docker, so the only prerequisite is [Docker](https://www.docker.com/products/docker-desktop) and a Gemini API key.
 
-**1. Install Docker Desktop**
+1. Clone and enter the repo.
 
-Download it from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop), install it, and open it. Wait until it says it is running (a whale icon appears in your menu bar / system tray).
+   ```bash
+   git clone <repository-url>
+   cd Chatty-data-generation
+   ```
 
-**2. Download this project**
+2. Get a Gemini API key. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
-If you have the project as a `.zip`, unzip it. Otherwise, in a terminal:
+3. Configure your environment.
 
-```bash
-git clone <repository-url>
-cd Chatty-data-generation
-```
+   ```bash
+   cp .env.example .env
+   ```
 
-**3. Get a Gemini API key** (one minute, free)
+   The template is ready for the API-key route; just paste your key into `GEMINI_API_KEY` (the rest have sensible defaults).
 
-Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey), sign in with a Google account, and click **Create API key**. Copy the key it gives you.
+4. Run it.
 
-**4. Add your key to the settings file**
+   ```bash
+   docker compose up --build
+   ```
 
-In the project folder, make a copy of `.env.example` and rename the copy to `.env`. Open `.env` in any text editor and set these two lines (leave everything else as-is):
+   Once it's up, open [http://localhost:8501](http://localhost:8501). Stop with `Ctrl+C`.
 
-```
-GOOGLE_GENAI_USE_VERTEXAI=false
-GEMINI_API_KEY=paste-your-key-here
-```
-
-**5. Start the app**
-
-In a terminal, from inside the project folder, run:
-
-```bash
-docker compose up --build
-```
-
-The first run takes a few minutes while it sets things up. When you see a line mentioning `8501`, open your web browser and go to:
-
-```
-http://localhost:8501
-```
-
-That's it — the app is running. To stop it, press `Ctrl+C` in the terminal.
-
-> **Tip:** sample schemas to try are in the `references/` folder (`library_mgm`, `restaurants`, `company_employee`). Upload one in the *Data Generation* tab to see it work.
+> Tip: sample schemas live in `examples/` (`library_mgm.ddl`, `restaurants.ddl`, `company_employee.ddl`). Upload one in the *Data Generation* tab to try it out.
 
 ## Configuration
 
-All settings live in a `.env` file (copy `.env.example` to `.env`). The quick start above only needs the first two keys; the rest have sensible defaults.
+Full reference for the keys in `.env`. The quick start above only needs `GEMINI_API_KEY`; the rest have sensible defaults.
 
 | Key | Purpose |
 |---|---|
