@@ -45,13 +45,22 @@ def data_generation_tab() -> None:
 
     col_a, col_b, col_c = st.columns(3)
     rows = col_a.number_input("Rows per table", min_value=1, max_value=5000, value=50, step=10)
-    temperature = col_b.slider("Temperature", 0.0, 2.0, 1.0, 0.1)
-    max_tokens = col_c.number_input("Max output tokens", min_value=256, max_value=32000, value=8192, step=256)
+    temperature = col_b.slider(
+        "Randomness", 0.0, 2.0, 1.0, 0.1,
+        help="Lower = more predictable, repetitive data. Higher = more varied, surprising data.",
+    )
+    max_tokens = col_c.number_input(
+        "Maximum response length", min_value=256, max_value=32000, value=8192, step=256,
+        help="Caps how much data the model returns at once. Raise it if rows look cut off.",
+    )
 
     with st.expander("Speed settings"):
         s1, s2 = st.columns(2)
-        concurrency = s1.slider("Parallel requests", 1, 24, 8, help="How many LLM batches run at once.")
-        disable_thinking = s2.checkbox("Disable model 'thinking' (faster)", value=True)
+        concurrency = s1.slider(
+            "Generation speed", 1, 24, 8,
+            help="How many requests run at the same time. Higher is faster but uses more capacity.",
+        )
+        disable_thinking = s2.checkbox("Faster mode", value=True, help="Skips the model's extra reasoning step.")
 
     if uploaded is not None and st.button("Generate", type="primary"):
         ddl = uploaded.getvalue().decode("utf-8", errors="replace")
