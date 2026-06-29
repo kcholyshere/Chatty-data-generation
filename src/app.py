@@ -197,11 +197,15 @@ def talk_to_your_data_tab() -> None:
     history: list[dict] = st.session_state.setdefault(history_key, [])
 
     # Resolve the pending prompt first (chat_input pins to the bottom regardless of call order) so the
-    # widgets below can react to it within the same run.
+    # widgets below can react to it within the same run. A clicked starter prompt arrives via
+    # session_state on a rerun (see below), which is what makes the starter buttons vanish on click.
     question = st.chat_input("Ask a question about your data…", max_chars=500)
+    if question is None:
+        question = st.session_state.pop("pending_example", None)
 
     # Starter prompts (schema-agnostic) to kick off a conversation in one click. Only on a fresh chat,
-    # and hidden the moment any prompt is submitted (else they flash during the first turn).
+    # and hidden the moment any prompt is submitted. A click stashes the prompt and reruns, so the next
+    # run knows the question up front and skips this block (the buttons disappear immediately).
     if not history and not question:
         st.caption("Try one:")
         examples = [
@@ -211,7 +215,8 @@ def talk_to_your_data_tab() -> None:
         cols = st.columns(len(examples))
         for i, example in enumerate(examples):
             if cols[i].button(example, key=f"example_{i}"):
-                question = example
+                st.session_state["pending_example"] = example
+                st.rerun()
 
     # Reset sits above the messages. Shown once there is history OR a prompt is being submitted this run,
     # so it already appears on the very first turn (history is only appended further down).
