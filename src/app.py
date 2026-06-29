@@ -206,8 +206,10 @@ def talk_to_your_data_tab() -> None:
 
     question = st.chat_input("Ask a question about your data…", max_chars=500)
 
-    # Starter prompts (schema-agnostic) to kick off a conversation in one click.
-    if not history:
+    # Starter prompts (schema-agnostic) to kick off a conversation in one click. Hidden once the chat
+    # has started OR the moment any prompt is submitted this run (else they flash during the first turn,
+    # because history is only appended further down).
+    if not history and not question:
         st.caption("Try one:")
         examples = [
             "How many rows are in each table? Show it as a bar chart.",
@@ -266,15 +268,18 @@ def talk_to_your_data_tab() -> None:
 
 
 def main() -> None:
-    # Grouping the pages under a section label renders the headline ABOVE the nav items;
-    # st.navigation always pins its menu to the top of the sidebar, so a separate title would sit below.
-    pages = {
-        "Chatty Data Generation": [
-            st.Page(data_generation_tab, title="Data Generation"),
-            st.Page(talk_to_your_data_tab, title="Talk to your data"),
-        ],
-    }
-    st.navigation(pages).run()
+    pages = [
+        st.Page(data_generation_tab, title="Data Generation"),
+        st.Page(talk_to_your_data_tab, title="Talk to your data"),
+    ]
+    # Hide the auto nav (it pins to the top of the sidebar) and render our own below a static title,
+    # so the headline sits above the tabs.
+    nav = st.navigation(pages, position="hidden")
+    with st.sidebar:
+        st.title("Chatty Data Generation")
+        for page in pages:
+            st.page_link(page)
+    nav.run()
 
 
 main()
