@@ -16,7 +16,7 @@ from pydantic import BaseModel
 class Settings(BaseModel):
     # --- Gemini / Vertex ---
     google_cloud_project: str | None = None
-    google_cloud_location: str = "us-central1"
+    google_cloud_location: str = "global"
     use_vertexai: bool = True
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.5-flash"
@@ -60,7 +60,7 @@ def get_settings() -> Settings:
     load_dotenv(override=True)
     return Settings(
         google_cloud_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
-        google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION", "global"),
         use_vertexai=_bool(os.getenv("GOOGLE_GENAI_USE_VERTEXAI"), default=True),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash"),
