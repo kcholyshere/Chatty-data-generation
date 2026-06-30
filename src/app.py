@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from generation.engine import GenerationConfig, generate, regenerate_table
-from llm.client import trace_chat_turn
+from llm.client import make_ddl_fallback, trace_chat_turn
 from query.guardrails import REFUSAL, check_input
 from query.service import ChartSpec, QueryService
 from schema.parser import parse_ddl
@@ -68,7 +68,9 @@ def data_generation_tab() -> None:
 
     if uploaded is not None and st.button("Generate", type="primary"):
         ddl = uploaded.getvalue().decode("utf-8", errors="replace")
-        schema = parse_ddl(ddl)
+        # Deterministic parser first; only build the LLM client to parse a statement it chokes on
+        # (e.g. an unusual SQL dialect), so valid DDL never needs credentials at parse time.
+        schema = parse_ddl(ddl, lambda stmt: make_ddl_fallback(_get_client())(stmt))
         if not schema.tables:
             st.error("No tables found in the uploaded DDL.")
             return
