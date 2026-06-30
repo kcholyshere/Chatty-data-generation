@@ -121,6 +121,9 @@ rows per table, gemini-3.5-flash):
   model paths are stub-tested, so a wrong JOIN or a thin answer is not caught automatically.
 - When the model issues several queries in one turn, the table displayed is the last one, which is
   usually but not always the one that answers the question.
+- Refinement is per-table only: each feedback box regenerates the one selected table. A global edit
+  across all tables at once (for example "replace value X with Y in every table") is not supported;
+  the same change must be requested table by table.
 
 Natural next steps would be whole-tuple sampling for composite FKs, an automated answer-quality
 evaluation harness, and richer statistical control over generated distributions.

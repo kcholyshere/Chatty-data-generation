@@ -38,7 +38,7 @@ tests/      test suite
 
 ## Quick start
 
-The fastest way to run the app. Everything (app + PostgreSQL) runs in Docker, so the only prerequisite is [Docker](https://www.docker.com/products/docker-desktop) and a Gemini API key.
+Everything (app + PostgreSQL) runs in Docker. Authentication uses **Vertex AI via Application Default Credentials** - no plain API keys. Prerequisites: [Docker](https://www.docker.com/products/docker-desktop), the [`gcloud` CLI](https://cloud.google.com/sdk/docs/install), and access to a GCP project with Vertex AI enabled.
 
 1. Clone and enter the repo.
 
@@ -47,7 +47,11 @@ The fastest way to run the app. Everything (app + PostgreSQL) runs in Docker, so
    cd Chatty-data-generation
    ```
 
-2. Get a Gemini API key. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+2. Authenticate to Google Cloud. This writes the Application Default Credentials that the container mounts.
+
+   ```bash
+   gcloud auth application-default login
+   ```
 
 3. Configure your environment.
 
@@ -55,7 +59,7 @@ The fastest way to run the app. Everything (app + PostgreSQL) runs in Docker, so
    cp .env.example .env
    ```
 
-   The template is ready for the API-key route; just paste your key into `GEMINI_API_KEY` (the rest have sensible defaults).
+   The Vertex AI settings (project, location) live in `docker-compose.yml`. It defaults to project `gd-gcp-gridu-genai`; to use your own, edit `GOOGLE_CLOUD_PROJECT` there. `.env` only carries optional Langfuse keys.
 
 4. Run it.
 
@@ -67,19 +71,21 @@ The fastest way to run the app. Everything (app + PostgreSQL) runs in Docker, so
 
 > Tip: sample schemas live in `examples/` (`library_mgm.ddl`, `restaurants.ddl`, `company_employee.ddl`). Upload one in the *Data Generation* tab to try it out.
 
+> Note: data refinement is **per-table** - each feedback box regenerates only the selected table. A single global edit across all tables at once (e.g. "replace X with Y everywhere") is not supported; apply such changes one table at a time.
+
 ## Configuration
 
-Full reference for the keys in `.env`. The quick start above only needs `GEMINI_API_KEY`; the rest have sensible defaults.
+Full reference for the keys in `.env`. The Docker quick start authenticates via Vertex AI (settings baked into `docker-compose.yml`); these keys matter mainly for the non-Docker dev path.
 
 | Key | Purpose |
 |---|---|
-| `GOOGLE_GENAI_USE_VERTEXAI` | `false` to use a simple Gemini API key, `true` for Google Cloud (Vertex AI) auth |
-| `GEMINI_API_KEY` | Your Gemini API key (when `GOOGLE_GENAI_USE_VERTEXAI=false`) |
-| `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` | GCP project + region (only for Vertex AI auth) |
+| `GOOGLE_GENAI_USE_VERTEXAI` | `true` (default) for Google Cloud (Vertex AI) auth; `false` only for the dev-only API-key path |
+| `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` | GCP project + region for Vertex AI auth |
+| `GEMINI_API_KEY` | Gemini API key, used only when `GOOGLE_GENAI_USE_VERTEXAI=false` (local dev only, not spec-conformant) |
 | `GEMINI_MODEL` | Model id (default `gemini-3.5-flash`) |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | Optional observability (leave blank to disable) |
 
-> Using Google Cloud / Vertex AI instead of an API key requires the `gcloud` CLI and running `gcloud auth application-default login` first. The API key route above is simpler.
+> **Auth:** the project standard is Vertex AI (no plain API keys). Run `gcloud auth application-default login` once so the credentials are available. The plain API-key route (`GOOGLE_GENAI_USE_VERTEXAI=false`) is a local-dev convenience only and does not work with the Docker setup, which forces Vertex AI.
 
 ## Running for development (without Docker)
 
